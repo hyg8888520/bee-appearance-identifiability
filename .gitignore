@@ -1,0 +1,27 @@
+# Local machine/server configuration
+configs/*.local.yaml
+
+# Python build and test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+
+# Model checkpoints and tensor artifacts
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

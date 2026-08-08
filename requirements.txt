@@ -1,0 +1,3 @@
+# The editable project declares the runtime and test dependencies in pyproject.toml.
+-e .
+
