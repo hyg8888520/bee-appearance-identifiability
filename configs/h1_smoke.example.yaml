@@ -1,0 +1,45 @@
+# Copy to configs/h1_smoke.local.yaml. This is deliberately capped at 300 frames.
+paths:
+  bee24_root: /path/to/datasets/BEE24
+  output_root: /path/to/experiments/beeid/h1-smoke
+  cache_root: /path/to/experiments/beeid/cache-smoke
+  dinov3_repo: /path/to/third_party/dinov3
+  dinov3_weights: /path/to/checkpoints/dinov3/dinov3_vits16.pth
+  topictrack_repo: /path/to/third_party/TOPICTrack
+  topic_agw_weights: /path/to/checkpoints/topictrack/bee_agw_s50.pth
+  dino_python: /path/to/venvs/beeid-dino/bin/python
+  topic_python: /path/to/venvs/beeid-topic/bin/python
+
+runtime:
+  device: cuda:0
+  batch_size: 32
+  num_workers: 4
+  amp: true
+  amp_dtype: float16
+  seed: 24
+  cache_shard_size: 512
+
+dataset:
+  source_splits: [train]
+  bbox_origin: one
+  invalid_bbox_policy: error
+  confidence_min: 0.0
+  validation_fraction: 0.2
+  max_videos: 5
+  max_frames_per_video: 300
+  video_ids: []
+  deep_validate_images: true
+
+protocol:
+  deltas: [1, 5, 10, 25]
+  crop_expansion: 0.2
+  input_size: 224
+  hard_negative_k: 5
+  evaluation_split: validation
+  failure_top_k: 10
+
+models:
+  resnet_weights: IMAGENET1K_V2
+  dinov3_hub_model: dinov3_vits16
+  dinov3_feature_source: patch_mean
+  topic_config_relative: fast-reid/configs/bee/AGW_S50.yml

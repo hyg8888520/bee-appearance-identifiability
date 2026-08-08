@@ -13,6 +13,16 @@ dist/
 .venv/
 venv/
 
+# External-only datasets, caches, experiment outputs, and local scratch
+datasets/
+checkpoints/
+feature_cache/
+cache/
+outputs/
+experiments/
+artifacts/
+*.npz
+
 # Model checkpoints and tensor artifacts
 *.pth
 *.pt
@@ -24,4 +34,3 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
-

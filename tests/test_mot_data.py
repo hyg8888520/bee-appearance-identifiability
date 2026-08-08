@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from beeid.data.manifest import MANIFEST_FIELDS, build_manifest, load_manifest, resolved_video_splits
+from beeid.data.mot import MotDataError, expanded_crop_box, parse_mot_row, read_seqinfo, row_to_observation
+
+
+def test_parse_mot_columns_and_one_based_conversion(tmp_path, config_factory, video_factory):
+    config = config_factory(tmp_path)
+    video = video_factory(config.paths.bee24_root, "train", "v1")
+    path = video / "gt" / "gt.txt"
+    row = parse_mot_row("1,7,11.5,21.5,20,10,0.7,3,0.8,99", path, 1)
+    observation = row_to_observation(
+        row, read_seqinfo(video, "train"), "validation", config.paths.bee24_root, "one", 0.2, 0.0
+    )
+    assert (row.frame, row.track_id, row.object_class, row.visibility, row.extra_columns) == (1, 7, 3, 0.8, (99.0,))
+    assert (
+        observation.bbox_x1, observation.bbox_y1, observation.bbox_x2, observation.bbox_y2
+    ) == (10.5, 20.5, 30.5, 30.5)
+    assert observation.frame_id == 1
+    assert observation.original_width == 20
+    assert observation.crop_expansion == 0.2
+    for required in (
+        "video_id", "frame_id", "track_id", "image_path", "x1", "y1", "x2", "y2",
+        "original_width", "original_height", "bbox_area", "crop_expansion", "crop_clipped",
+    ):
+        assert required in MANIFEST_FIELDS
+    assert observation.identity == "v1:7"
+    assert observation.observation_id == "validation:v1:000001:7"
+
+
+@pytest.mark.parametrize("line", ["1,2,3", "x,2,1,1,2,2", "1,2,1,1,nan,2", "1.5,2,1,1,2,2"])
+def test_parse_mot_rejects_bad_rows(tmp_path, line):
+    with pytest.raises(MotDataError):
+        parse_mot_row(line, tmp_path / "gt.txt", 4)
+
+
+def test_expansion_floor_ceil_and_clipping():
+    assert expanded_crop_box(10, 20, 30, 40, 100, 100, 0.2) == (8, 18, 32, 42, False)
+    assert expanded_crop_box(-1.2, 2, 8.2, 10, 10, 10, 0.2) == (0, 1, 10, 10, True)
+
+
+def test_manifest_split_is_video_level_deterministic_and_composite_identity(tmp_path, config_factory, video_factory):
+    config = config_factory(tmp_path)
+    for index in range(5):
+        video_factory(config.paths.bee24_root, "train", f"video-{index}")
+    first, metadata = resolved_video_splits(config)
+    second, _ = resolved_video_splits(config)
+    assert first == second
+    assert metadata["validation_count"] == 1
+    observations = build_manifest(config)
+    assert config.manifest_path.is_file()
+    assert config.resolved_split_path.is_file()
+    loaded = load_manifest(config.manifest_path, valid_only=True)
+    assert [item.observation_id for item in loaded] == [item.observation_id for item in observations if item.valid]
+    assert all(item.identity == f"{item.video_id}:{item.track_id}" for item in loaded)
+    assert len({item.identity for item in loaded if item.track_id == 1}) == 5
+
+
+def test_invalid_box_errors_or_is_recorded_as_skipped(tmp_path, config_factory, video_factory):
+    rows = ["1,1,20,20,0,5,1,1,1"]
+    config = config_factory(tmp_path)
+    video_factory(config.paths.bee24_root, "train", "bad", rows=rows)
+    with pytest.raises(MotDataError, match="non_positive_area"):
+        build_manifest(config)
+
+    skip_root = tmp_path / "skip"
+    skip_config = config_factory(skip_root, dataset={"invalid_bbox_policy": "skip"})
+    video_factory(skip_config.paths.bee24_root, "train", "bad", rows=rows)
+    observations = build_manifest(skip_config)
+    assert "non_positive_area" in observations[0].skip_reason
+    assert load_manifest(skip_config.manifest_path, valid_only=True) == []
+
+
+def test_duplicate_identity_in_frame_is_rejected(tmp_path, config_factory, video_factory):
+    config = config_factory(tmp_path)
+    video_factory(config.paths.bee24_root, "train", "dup", rows=[
+        "1,2,10,10,10,10,1,1,1", "1,2,20,20,10,10,1,1,1",
+    ])
+    with pytest.raises(MotDataError, match="Duplicate identity"):
+        build_manifest(config)
+
+
+def test_partial_out_of_bounds_clips_but_fully_outside_errors(tmp_path, config_factory, video_factory):
+    config = config_factory(tmp_path)
+    video_factory(config.paths.bee24_root, "train", "clip", rows=["1,1,-5,5,20,10,1,1,1"])
+    item = build_manifest(config)[0]
+    assert item.clipped and item.crop_x0 == 0
+
+    other = tmp_path / "outside"
+    other_config = config_factory(other)
+    video_factory(other_config.paths.bee24_root, "train", "outside", rows=["1,1,200,5,20,10,1,1,1"])
+    with pytest.raises(MotDataError, match="fully_out_of_bounds"):
+        build_manifest(other_config)

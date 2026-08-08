@@ -1,0 +1,4 @@
+"""Stable status labels shared by runtime reports and documentation."""
+
+SERVER_VALIDATION_PENDING = "SERVER_VALIDATION_PENDING"
+BLOCKED_TOPIC_AGW_COMPATIBILITY = "BLOCKED_TOPIC_AGW_COMPATIBILITY"
