@@ -17,7 +17,7 @@ venv/
 datasets/
 checkpoints/
 feature_cache/
-cache/
+/cache/
 outputs/
 experiments/
 artifacts/
