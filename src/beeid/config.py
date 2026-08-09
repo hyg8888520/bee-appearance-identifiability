@@ -27,6 +27,7 @@ class PathsConfig:
     topic_agw_weights: Path
     h1_output_root: Path | None = None
     h2_output_root: Path | None = None
+    h3_output_root: Path | None = None
     dino_python: Path | None = None
     topic_python: Path | None = None
 
@@ -137,6 +138,35 @@ class H3Config:
 
 
 @dataclass(frozen=True)
+class H4Config:
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    horizons: tuple[int, ...]
+    go_horizon: int
+    primary_horizon: int
+    oracle_history_length: int
+    oracle_unique_margin: float
+    min_recoverable_fraction: float
+    min_events_per_model: int
+    min_videos_with_events: int
+    beam_width: int
+    max_component_size: int
+    ambiguity_margin: float
+    memory_alpha: float
+    appearance_weight: float
+    motion_weight: float
+    max_normalized_distance: float
+    min_assignment_score: float
+    unmatched_penalty: float
+    max_age: int
+    noninferiority_tolerance: float
+    min_nonharmed_videos: int
+    bootstrap_replicates: int
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -147,6 +177,7 @@ class ExperimentConfig:
     h2: H2Config | None
     h25: H25Config | None
     h3: H3Config | None
+    h4: H4Config | None
 
     @property
     def manifest_path(self) -> Path:
@@ -320,7 +351,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     root = _mapping(raw, "config")
     _keys(
         root,
-        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3"},
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4"},
         "config",
     )
     base = config_path.parent
@@ -329,6 +360,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     path_keys = {
         "bee24_root", "output_root", "cache_root", "dinov3_repo", "dinov3_weights",
         "topictrack_repo", "topic_agw_weights", "h1_output_root", "h2_output_root",
+        "h3_output_root",
         "dino_python", "topic_python",
     }
     _keys(p, path_keys, "paths")
@@ -342,6 +374,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         topic_agw_weights=_path(_require(p, "topic_agw_weights", "paths"), base, "paths.topic_agw_weights"),  # type: ignore[arg-type]
         h1_output_root=_path(p.get("h1_output_root"), base, "paths.h1_output_root", optional=True),
         h2_output_root=_path(p.get("h2_output_root"), base, "paths.h2_output_root", optional=True),
+        h3_output_root=_path(p.get("h3_output_root"), base, "paths.h3_output_root", optional=True),
         dino_python=_path(
             p.get("dino_python"), base, "paths.dino_python", optional=True, preserve_symlink=True
         ),
@@ -749,6 +782,130 @@ def load_config(path: str | Path) -> ExperimentConfig:
             ),
         )
 
+    h4: H4Config | None = None
+    if "h4" in root and root["h4"] is not None:
+        value = _mapping(root["h4"], "h4")
+        _keys(
+            value,
+            {
+                "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+                "horizons", "go_horizon", "primary_horizon", "oracle_history_length",
+                "oracle_unique_margin", "min_recoverable_fraction", "min_events_per_model",
+                "min_videos_with_events", "beam_width", "max_component_size",
+                "ambiguity_margin", "memory_alpha", "appearance_weight", "motion_weight",
+                "max_normalized_distance", "min_assignment_score", "unmatched_penalty",
+                "max_age", "noninferiority_tolerance", "min_nonharmed_videos",
+                "bootstrap_replicates",
+            },
+            "h4",
+        )
+        if paths.h1_output_root is None:
+            raise ConfigurationError("paths.h1_output_root is required when h4 is configured")
+        if paths.h3_output_root is None:
+            raise ConfigurationError("paths.h3_output_root is required when h4 is configured")
+        roots = {
+            paths.output_root.resolve(strict=False),
+            paths.h1_output_root.resolve(strict=False),
+            paths.h3_output_root.resolve(strict=False),
+        }
+        if len(roots) != 3:
+            raise ConfigurationError("H4 output_root must differ from H1 and H3 source roots")
+        if dataset.source_splits != ("train",) or protocol.evaluation_split != "validation":
+            raise ConfigurationError(
+                "H4 development is restricted to the frozen train-derived validation split"
+            )
+        horizons = _ints(_require(value, "horizons", "h4"), "h4.horizons")
+        if tuple(sorted(set(horizons))) != horizons:
+            raise ConfigurationError("h4.horizons must be unique and strictly increasing")
+        go_horizon = _positive_int(_require(value, "go_horizon", "h4"), "h4.go_horizon")
+        primary_horizon = _positive_int(
+            _require(value, "primary_horizon", "h4"), "h4.primary_horizon"
+        )
+        if go_horizon not in horizons or primary_horizon not in horizons:
+            raise ConfigurationError("h4.go_horizon and primary_horizon must occur in h4.horizons")
+        appearance_weight = _bounded_float(
+            _require(value, "appearance_weight", "h4"), "h4.appearance_weight", 0.0, 1.0
+        )
+        motion_weight = _bounded_float(
+            _require(value, "motion_weight", "h4"), "h4.motion_weight", 0.0, 1.0
+        )
+        if appearance_weight + motion_weight <= 0:
+            raise ConfigurationError("H4 appearance_weight and motion_weight cannot both be zero")
+        max_component_size = _positive_int(
+            _require(value, "max_component_size", "h4"), "h4.max_component_size"
+        )
+        if max_component_size < 2 or max_component_size > 6:
+            raise ConfigurationError("h4.max_component_size must be in [2, 6]")
+        h4 = H4Config(
+            protocol_lock_path=_path(
+                _require(value, "protocol_lock", "h4"), base, "h4.protocol_lock"
+            ),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(
+                _require(value, "protocol_checksum", "h4"), base, "h4.protocol_checksum"
+            ),  # type: ignore[arg-type]
+            project_split_path=_path(
+                _require(value, "project_split", "h4"), base, "h4.project_split"
+            ),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h4"), "h4.allow_subset"),
+            horizons=horizons,
+            go_horizon=go_horizon,
+            primary_horizon=primary_horizon,
+            oracle_history_length=_positive_int(
+                _require(value, "oracle_history_length", "h4"),
+                "h4.oracle_history_length",
+            ),
+            oracle_unique_margin=_bounded_float(
+                _require(value, "oracle_unique_margin", "h4"),
+                "h4.oracle_unique_margin", 0.0, 1.0,
+            ),
+            min_recoverable_fraction=_bounded_float(
+                _require(value, "min_recoverable_fraction", "h4"),
+                "h4.min_recoverable_fraction", 0.0, 1.0,
+            ),
+            min_events_per_model=_positive_int(
+                _require(value, "min_events_per_model", "h4"), "h4.min_events_per_model"
+            ),
+            min_videos_with_events=_positive_int(
+                _require(value, "min_videos_with_events", "h4"),
+                "h4.min_videos_with_events",
+            ),
+            beam_width=_positive_int(_require(value, "beam_width", "h4"), "h4.beam_width"),
+            max_component_size=max_component_size,
+            ambiguity_margin=_bounded_float(
+                _require(value, "ambiguity_margin", "h4"), "h4.ambiguity_margin", 0.0, 1.0
+            ),
+            memory_alpha=_bounded_float(
+                _require(value, "memory_alpha", "h4"), "h4.memory_alpha", 0.0, 1.0
+            ),
+            appearance_weight=appearance_weight,
+            motion_weight=motion_weight,
+            max_normalized_distance=_bounded_float(
+                _require(value, "max_normalized_distance", "h4"),
+                "h4.max_normalized_distance", 0.01, 100.0,
+            ),
+            min_assignment_score=_bounded_float(
+                _require(value, "min_assignment_score", "h4"),
+                "h4.min_assignment_score", 0.0, 1.0,
+            ),
+            unmatched_penalty=_bounded_float(
+                _require(value, "unmatched_penalty", "h4"),
+                "h4.unmatched_penalty", 0.0, 1.0,
+            ),
+            max_age=_positive_int(_require(value, "max_age", "h4"), "h4.max_age"),
+            noninferiority_tolerance=_bounded_float(
+                _require(value, "noninferiority_tolerance", "h4"),
+                "h4.noninferiority_tolerance", 0.0, 0.1,
+            ),
+            min_nonharmed_videos=_positive_int(
+                _require(value, "min_nonharmed_videos", "h4"),
+                "h4.min_nonharmed_videos",
+            ),
+            bootstrap_replicates=_positive_int(
+                _require(value, "bootstrap_replicates", "h4"),
+                "h4.bootstrap_replicates",
+            ),
+        )
+
     return ExperimentConfig(
-        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4
     )

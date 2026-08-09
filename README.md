@@ -1,4 +1,23 @@
-# BEE24 H1 Appearance, H2/H2.5 Diagnostics, and H3 Reliability-Aware Tracking
+# BEE24 H1 Appearance, H2/H2.5 Diagnostics, H3 Tracking, and H4 Deferred Identity
+
+## H4：延迟身份决策与假设隔离记忆
+
+H4 是独立于已冻结 H3 的新开发阶段。它先审计一次逐帧 IDSW 在未来 1/3/5/10 帧是否可恢复；只有 ResNet50 与 DINOv3 都通过预注册门禁，才运行事件触发的 fixed-lag 局部多假设关联。方法不训练 backbone、不依赖 TOPIC tracker，并通过 `immediate_commit`、frozen-memory h5 及 isolated-memory h1/h3/h5/h10 六个变体区分未来证据、延迟和分支记忆隔离的作用。
+
+H4 只读复用完整 H3 cache，所以服务器运行主要占用 CPU，GPU 利用率低是预期现象。完整定义见 [H4 protocol](docs/h4_protocol.md)、[method/novelty boundary](docs/h4_method_and_novelty.md) 与 [server deployment](docs/h4_server_deployment.md)。首次运行：
+
+```bash
+cp configs/h4.local.yaml.example configs/h4.local.yaml
+~/venvs/beeid-dino/bin/python -m beeid.cli h4-validate-protocol \
+  --protocol configs/h4_protocol.lock.yaml \
+  --checksum configs/h4_protocol.lock.sha256
+~/venvs/beeid-dino/bin/python -m beeid.cli h4-synthetic-smoke \
+  --output ~/experiments/bee-appearance-identifiability/h4-synthetic
+bash scripts/h4_smoke_test.sh configs/h4_smoke.local.yaml ~/venvs/beeid-dino/bin/python
+bash scripts/run_h4.sh configs/h4.local.yaml ~/venvs/beeid-dino/bin/python
+```
+
+代码提交时，真实 BEE24 H4 仍为 `SERVER_VALIDATION_PENDING`；synthetic feature 只验证程序契约，不是实验结果。H4 development 协议允许的 final-test 读取次数为 0。
 
 ## H2.5 refined memory-contamination 与 H3 冻结协议
 

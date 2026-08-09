@@ -37,3 +37,29 @@ references:
     license: LICENSE_NOT_STATED_BY_SOURCE
     interface: MOTChallenge train/test trees
     purpose: User-lawfully-obtained evaluation data; never redistributed
+research_prior_art:
+  tracking_by_associating_clips:
+    url: https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/5114_ECCV_2022_paper.php
+    venue: ECCV 2022
+    runtime_dependency: false
+    purpose: Prior art boundary for multi-frame clip association and error propagation
+  memot:
+    url: https://openaccess.thecvf.com/content/CVPR2022/html/Cai_MeMOT_Multi-Object_Tracking_With_Memory_CVPR_2022_paper.html
+    venue: CVPR 2022
+    runtime_dependency: false
+    purpose: Prior art boundary for long-term tracking memory
+  memotr:
+    url: https://openaccess.thecvf.com/content/ICCV2023/html/Gao_MeMOTR_Long-Term_Memory-Augmented_Transformer_for_Multi-Object_Tracking_ICCV_2023_paper.html
+    venue: ICCV 2023
+    runtime_dependency: false
+    purpose: Prior art boundary for memory-augmented temporal association
+  marginal_inference_mot:
+    url: https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/317_ECCV_2022_paper.php
+    venue: ECCV 2022
+    runtime_dependency: false
+    purpose: Prior art boundary for assignment uncertainty and marginal probabilities
+  u2mot:
+    url: https://openaccess.thecvf.com/content/ICCV2023/html/Liu_Uncertainty-Aware_Unsupervised_Multi-Object_Tracking_ICCV_2023_paper.html
+    venue: ICCV 2023
+    runtime_dependency: false
+    purpose: Prior art boundary for uncertainty-aware MOT
