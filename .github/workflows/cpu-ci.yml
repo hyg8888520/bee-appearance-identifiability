@@ -26,3 +26,5 @@ jobs:
         run: |
           beeid synthetic-smoke
           beeid h2-synthetic-smoke
+          beeid h25-synthetic-smoke
+          beeid h3-validate-protocol --protocol configs/h3_protocol.lock.yaml --checksum configs/h3_protocol.lock.sha256

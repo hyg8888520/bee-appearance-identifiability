@@ -1,4 +1,26 @@
-# BEE24 H1 Appearance Identifiability and H2 Reliability Diagnostics
+# BEE24 H1 Appearance, H2 Reliability, H2.5 Memory Diagnostics, and Frozen H3 Protocol
+
+## H2.5 refined memory-contamination 与 H3 冻结协议
+
+H2.5 不再使用已被 H2 结果否定的“静态小框或静态低 Laplacian 即低质量”规则。它只在已冻结的 development validation 上，按结果盲的经验百分位选择五类动态风险：身份历史离群、尺度突变、方向代理突变、清晰度变化和拥挤/重叠。对每个事件，代码注入同帧空间最近的不同身份特征，并在完全相同的后续目标上比较四种策略：oracle 正确更新、无条件更新、跳过更新和可靠性加权更新。该实验是 GT 轨迹上的机制测试，不是 MOT 结果。
+
+H3 当前只冻结实验协议，不假装已经实现或运行完整 RAM-Bee tracker。协议锁固定数据隔离、可靠性特征、project-train 阈值拟合、GT/fixed-detector 两阶段、四组消融、最终指标和一次性 final-test 门禁。详见 [H2.5 protocol](docs/h25_protocol.md)、[H3 frozen protocol](docs/h3_frozen_protocol.md) 和 [server deployment](docs/h25_server_deployment.md)。
+
+服务器上先从已完成的 H2 目录复用特征，无需再次提取：
+
+```bash
+cd ~/projects/bee-appearance-identifiability
+cp configs/h25.example.yaml configs/h25.local.yaml
+# 只编辑外部路径；尤其是 h1_output_root、h2_output_root、output_root 和 cache_root。
+~/venvs/beeid-dino/bin/python -m beeid.cli h3-validate-protocol \
+  --protocol configs/h3_protocol.lock.yaml \
+  --checksum configs/h3_protocol.lock.sha256
+~/venvs/beeid-dino/bin/python -m beeid.cli h25-synthetic-smoke \
+  --output ~/experiments/bee-appearance-identifiability/h25-synthetic
+bash scripts/run_h25.sh configs/h25.local.yaml ~/venvs/beeid-dino/bin/python
+```
+
+H2.5 输出包括 `h25_events.csv`、`h25_strategy_trajectories.csv`、`h25_strategy_summary.csv`、`h25_paired_summary.csv`、`h25_cluster_bootstrap.csv`、阈值/metadata、日志和 PNG figures。H2.5 的真实 BEE24、真实 cache 和 RTX 4090 运行在提交代码时仍为 `SERVER_VALIDATION_PENDING`；synthetic encoder 绝不作为实验模型或结果。
 
 本仓库实现 BEE24 的 GT-box 外观可辨识性上限基准 H1，以及 observation reliability 与轨迹模板污染诊断 H2。H1 比较 ImageNet ResNet50、DINOv3 ViT-S/16 与 TOPICTrack 官方 BEE AGW；H2 研究时间、清晰度、重叠、邻近密度、边界、上下文和历史一致性何时会使这些外观特征不可靠。
 

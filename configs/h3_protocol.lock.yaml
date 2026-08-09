@@ -1,0 +1,66 @@
+schema_version: 1
+protocol_id: bee24-h3-ram-bee-frozen-v1
+status: FROZEN
+identity_definition: [video_id, track_id]
+isolation_unit: video_id
+project_split:
+  path: configs/splits/project_split.yaml
+  required_status: FROZEN
+  partitions: [project_train, development_validation, final_test]
+  threshold_fitting_partition: project_train
+  development_partition_role: model_selection_ablations_and_error_analysis
+  final_test_role: one_time_locked_evaluation
+  final_test_access: false
+  final_test_excluded_from_fitting: true
+  final_test_excluded_from_selection: true
+model_policy:
+  primary_backbones: [resnet50_imagenet1k_v2, dinov3_vits16]
+  official_topic_agw: REFERENCE_ONLY_TRAINING_OVERLAP_UNCONFIRMED
+  split_clean_agw: PENDING_IMPLEMENTATION_AND_SERVER_VALIDATION
+reliability_model:
+  included_features:
+    - identity_history_outlier
+    - bbox_scale_change
+    - orientation_change_proxy
+    - sharpness_change
+    - crowding_overlap
+  excluded_static_features:
+    - bbox_area
+    - bbox_laplacian_variance
+  threshold_fitting_partition: project_train
+  development_use: hyperparameter_selection_and_ablation
+  causality: past_and_current_observations_only
+stages:
+  - gt_detection_boxes
+  - fixed_detector_boxes
+association_variants:
+  - baseline_association
+  - selective_memory_update
+  - reliability_weighted_association
+  - full_ram_bee
+metrics:
+  primary: [AssA, IDF1, IDSW, Frag, HOTA]
+  diagnostics: [memory_update_acceptance_rate, recovery_length, contamination_error_rate]
+freeze_gate:
+  required_before_final_test:
+    - method_code_frozen
+    - configuration_frozen
+    - model_checkpoints_frozen
+    - threshold_artifact_frozen
+    - reporting_code_frozen
+    - development_results_signed_off
+  final_test_runs_allowed: 1
+stop_go:
+  stop_if:
+    - split_or_identity_leakage_detected
+    - reliability_uses_future_information
+    - official_agw_presented_as_split_clean
+    - final_test_accessed_before_freeze_gate
+  go_if:
+    - h25_weighted_or_skip_beats_unconditional_on_paired_development_events
+    - improvement_is_not_confined_to_one_video_or_identity_cluster
+    - method_remains_stable_with_gt_and_fixed_detector_boxes
+claims:
+  h25_role: controlled_mechanism_evidence
+  h3_role: end_to_end_tracking_validation
+  backbone_claim: changing_backbone_alone_does_not_resolve_observation_unreliability

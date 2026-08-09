@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bee-appearance-identifiability"
-version = "0.2.0"
-description = "Reproducible BEE24 H1 appearance and H2 reliability diagnostics"
+version = "0.3.0"
+description = "Reproducible BEE24 H1, H2, and refined H2.5 diagnostics with a frozen H3 protocol"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [

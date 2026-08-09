@@ -1,3 +1,10 @@
+## H2.5 / H3 delivery checklist
+
+- [ ] H2.5 synthetic dynamic events → four paired strategies → clustered bootstrap → report smoke
+- [ ] H3 protocol schema and SHA-256 lock validation
+- [ ] Real BEE24 H2.5 smoke/full run remains `SERVER_VALIDATION_PENDING`
+- [ ] H3 tracker implementation is explicitly out of scope; final test remains unread
+
 ## Scope
 
 Implements BEE24 H1 GT-crop appearance identifiability and H2 observation-reliability/template-contamination diagnostics without committing data, weights, caches, outputs or local YAML.
