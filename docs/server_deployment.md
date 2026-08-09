@@ -4,7 +4,7 @@ Target profile supplied for this project: RTX 4090 24 GB, 16 allocated Xeon core
 
 ## Preconditions
 
-- Repository clone is private and contains no credentials.
+- Repository is public and contains no credentials, data, checkpoints, caches, or experiment outputs.
 - BEE24, checkpoints, third-party checkouts, cache and output are outside the repository.
 - DINOv3 and TOPICTrack are checked out at revisions in `references.lock.yaml`.
 - `configs/h1.local.yaml` contains all paths, including both environment interpreters.
@@ -26,4 +26,4 @@ bash scripts/smoke_test.sh configs/h1_smoke.local.yaml
 
 Next run one full video, call `beeid estimate` with measured throughput/dimension/peak memory, and review predicted time/disk. Only after explicit user confirmation run full H1. `run_h1.sh` supplies the required full-run confirmation flag; avoid calling it during preflight. `resume_h1.sh` revalidates each feature shard before reuse.
 
-All items in this runbook are `SERVER_VALIDATION_PENDING` until their real artifacts are available. No Slurm example is supplied while scheduler type is unknown.
+The first full H1 development run has been completed and audited; this runbook remains the acceptance procedure for a fresh environment or rerun. H2 server execution is documented separately in `docs/h2_server_deployment.md`. No Slurm example is supplied while scheduler type is unknown.

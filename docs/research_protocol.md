@@ -14,6 +14,8 @@ For an original box `[x0,y0,x1,y1)`, expansion 0.2 subtracts 0.1 width/height on
 
 If no official validation exists, train video IDs are sorted by the pair `(SHA256(f"{seed}:{video_id}"), video_id)`, with seed fixed to 24. The first `max(1, round(0.2*n_train))` videos become project validation. The result and manifest hash are written to `resolved_split.yaml`. The official test split is never used for method selection.
 
+The first completed full H1 run permanently fixes those six videos as development validation. The train/development/final-test partition is versioned in [`configs/splits/project_split.yaml`](../configs/splits/project_split.yaml). Development validation may be used for thresholds, ablations and error analysis, but is no longer an unbiased final test. The official test videos remain locked until the method, training recipe and reporting code are frozen.
+
 ## Embeddings
 
 Every extractor returns a finite 2-D float32 matrix with one L2-normalized row per crop.
@@ -21,6 +23,8 @@ Every extractor returns a finite 2-D float32 matrix with one L2-normalized row p
 - ResNet50: torchvision v0.22.1 `ResNet50_Weights.IMAGENET1K_V2`, classification head replaced by Identity, official weights transforms.
 - DINOv3: pinned local Hub `dinov3_vits16`; `forward_features()` must contain finite `x_norm_patchtokens` and `x_norm_clstoken` with valid shapes. H1 defaults to patch-token mean. CLS and official intermediate-layer access remain available.
 - TOPIC AGW: pinned TOPICTrack BEE `AGW_S50.yml`, ResNeSt-50, GeM and BN neck. Number of classes is inferred from `heads.weight`; checkpoint/model keys and shapes are compared before a strict state load. The common protocol overrides official 384×384 to 224×224 (256 supported).
+
+Strict checkpoint compatibility does not establish split cleanliness. The official BEE AGW checkpoint is `REFERENCE_ONLY` while its Re-ID training-crop mapping is unresolved; the primary supervised Re-ID comparison requires a split-clean AGW trained only on project-train videos. The ruling and evidence requirements are recorded in [`agw_training_overlap_audit.md`](agw_training_overlap_audit.md).
 
 Parameters are frozen and inference-only. AMP state/dtype is part of the cache signature. Random weights and test embeddings are never experimental results.
 
@@ -39,3 +43,9 @@ Reported values include Rank-1, Hard Rank-1, positive similarity, maximum hard-n
 ## Failure and interpretation
 
 Failure selections cover model correctness combinations, lowest margin, smallest targets and boundary-clipped crops. They are written only below external `output_root`. GT crops measure an appearance upper bound; background/context leakage, expansion bias and detector errors are outside H1. No H1 result alone establishes fewer tracker ID switches.
+
+The frozen first-run evidence and permitted conclusions are recorded in [`h1_findings.md`](h1_findings.md).
+
+## H2 handoff
+
+H2 consumes the completed H1 manifest and caches without changing the frozen retrieval contract. It is restricted to development validation and diagnoses observation-quality/context/history signals plus controlled EMA memory contamination. It does not implement a tracker or read final test. The pre-registered interventions, proxy boundaries, clustered statistics, and artifact contract are defined in [`h2_protocol.md`](h2_protocol.md).

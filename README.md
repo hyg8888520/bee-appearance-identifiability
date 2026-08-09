@@ -1,10 +1,10 @@
-# BEE24 H1 Appearance Identifiability
+# BEE24 H1 Appearance Identifiability and H2 Reliability Diagnostics
 
-本仓库实现 BEE24 的 GT-box 外观可辨识性上限基准：比较 ImageNet ResNet50、DINOv3 ViT-S/16 与 TOPICTrack 官方 BEE AGW，在固定帧间隔下仅凭 crop 外观能否找回同一只蜜蜂。
+本仓库实现 BEE24 的 GT-box 外观可辨识性上限基准 H1，以及 observation reliability 与轨迹模板污染诊断 H2。H1 比较 ImageNet ResNet50、DINOv3 ViT-S/16 与 TOPICTrack 官方 BEE AGW；H2 研究时间、清晰度、重叠、邻近密度、边界、上下文和历史一致性何时会使这些外观特征不可靠。
 
-本项目不是 DINOv3、TOPICTrack、FastReID 或 BEE24 的官方实现；它只通过固定版本的官方接口组织独立 H1 实验。
+本项目不是 DINOv3、TOPICTrack、FastReID 或 BEE24 的官方实现；它只通过固定版本的官方接口组织独立 H1/H2 实验。
 
-> 当前状态：源码、配置、CPU 测试和 synthetic smoke 可在本地验证；RTX 4090、完整 BEE24、真实 DINOv3/TOPIC checkpoint 的结果一律为 `SERVER_VALIDATION_PENDING`。本仓库不包含也不再分发数据、权重、crop、cache 或真实实验输出。
+> 当前状态：首次完整 H1 已在 RTX 4090、完整 BEE24 和真实 checkpoint 上运行并完成结果审计，固定结论见 [h1_findings.md](docs/h1_findings.md)。H2 源码、CPU 单元测试和 test-only synthetic smoke 可在本地验证；真实 H2 多干预特征、可靠性统计和模板污染结果仍为 `SERVER_VALIDATION_PENDING`。两阶段都只使用 development validation，最终 test 继续锁定。
 
 ## 许可与使用边界
 
@@ -19,14 +19,20 @@
 - cosine 并列一律算 Rank-1 失败；无 positive 不进分母，无 negative 不进 Hard Rank-1 分母，但都记录原因。
 - 所有 cache 指纹覆盖 manifest、模型/上游版本、checkpoint SHA-256、transform、尺寸和 AMP；分片先临时写入再原子重命名，可安全续跑。
 
-完整定义见 [research_protocol.md](docs/research_protocol.md)。
+完整定义见 [research_protocol.md](docs/research_protocol.md)。项目 train/development-validation/final-test 的冻结清单见 [project_split.yaml](configs/splits/project_split.yaml)，官方 AGW 的解释边界见 [agw_training_overlap_audit.md](docs/agw_training_overlap_audit.md)。
+
+## H2：观测可靠性与模板污染
+
+H2 不重新划分数据，也不覆盖 H1。它从已完成的 H1 manifest 读取同一批 development observations，并对每个 backbone 运行固定干预：0/20/50% 上下文、224/256 输入、矩形 bbox 前景/背景对照和 Gaussian blur。结果盲信号包括 bbox/patch coverage、Laplacian 清晰度、结构方向代理、GT-box 重叠、邻近密度、边界、轨迹年龄和历史 prototype 一致性。
+
+统计同时报告样本量、Rank-1、margin、逐视频结果，以及 video/identity 聚类 bootstrap；不会把相邻帧当成独立样本。受控模板实验在 GT 轨迹上向普通 EMA 注入低质量 observation、模糊特征或同帧错误身份，测量相似度损失、诱发错误和恢复步数。详细、预先固定的定义见 [h2_protocol.md](docs/h2_protocol.md)。这一步只诊断机制，不提前实现 RAM-Bee，也不等价于完整 MOT。
 
 ## 服务器首次部署
 
 以下命令均在 Linux 服务器执行，不需要安装 Codex。建议目录仅作示例，业务代码不会硬编码它们。
 
 ```bash
-git clone <private-repository-url> ~/projects/bee-appearance-identifiability
+git clone https://github.com/hyg8888520/bee-appearance-identifiability.git ~/projects/bee-appearance-identifiability
 git clone https://github.com/facebookresearch/dinov3.git ~/third_party/dinov3
 git -C ~/third_party/dinov3 checkout 6876159a11b4df116f30f667f8c9888617df0751
 git clone https://github.com/holmescao/TOPICTrack.git ~/third_party/TOPICTrack
@@ -37,7 +43,9 @@ bash scripts/setup_dino_env.sh ~/venvs/beeid-dino
 bash scripts/setup_topic_env.sh ~/venvs/beeid-topic
 cp configs/h1.local.yaml.example configs/h1.local.yaml
 cp configs/h1_smoke.example.yaml configs/h1_smoke.local.yaml
-# 编辑两个 *.local.yaml 中的全部路径；这些文件已被 Git 忽略。
+cp configs/h2.local.yaml.example configs/h2.local.yaml
+cp configs/h2_smoke.example.yaml configs/h2_smoke.local.yaml
+# 按所运行阶段编辑 *.local.yaml 中的全部路径；这些文件已被 Git 忽略。
 ```
 
 两个环境都使用 Python 3.11、官方 `torch==2.7.1` / `torchvision==0.22.1` CUDA 12.8 wheel。驱动报告 CUDA 13.0 并不要求安装 CUDA 13.0 PyTorch；不要修改/降级 NVIDIA driver，也不默认源码编译 PyTorch。TOPIC 环境只安装 FastReID 推理所需的最小现代依赖，不安装旧 PyTorch 1.8、YOLOX、detector 或 tracker。
@@ -82,6 +90,18 @@ beeid evaluate --config configs/h1.local.yaml --models resnet50 dinov3 topic_agw
 beeid report --config configs/h1.local.yaml --models resnet50 dinov3 topic_agw
 beeid estimate --config configs/h1.local.yaml --embedding-dimension 384 --observations-per-second 100
 beeid synthetic-smoke
+
+# H2 requires a completed H1 output root and a separate H2 output root.
+beeid h2-validate --config configs/h2.local.yaml
+beeid h2-signals --config configs/h2.local.yaml
+beeid h2-extract --config configs/h2.local.yaml --model resnet50
+beeid h2-extract --config configs/h2.local.yaml --model dinov3
+beeid h2-extract --config configs/h2.local.yaml --model topic_agw
+beeid h2-evaluate --config configs/h2.local.yaml --models resnet50 dinov3 topic_agw
+beeid h2-contamination --config configs/h2.local.yaml --models resnet50 dinov3 topic_agw
+beeid h2-report --config configs/h2.local.yaml --models resnet50 dinov3 topic_agw
+beeid h2-estimate --config configs/h2.local.yaml --model dinov3 --embedding-dimension 384 --observations-per-second 100
+beeid h2-synthetic-smoke
 ```
 
 真实 `extract --model` 只有三个选项，不包含 synthetic 测试编码器。DINOv3 仅通过 pinned 本地 Hub 的 `dinov3_vits16` 和官方 `forward_features()` 运行，默认使用 `x_norm_patchtokens` mean pooling；没有 timm、DINOv2、Hugging Face 或随机权重 fallback。
@@ -95,6 +115,8 @@ beeid synthetic-smoke
 - `logs/`、`figures/`；
 - cache 在 `<cache_root>/features/<model>/<fingerprint>/`，位置映射记录于 `<output_root>/cache_locations.json`。
 
+H2 另写出 `h2_summary.csv`、observation/query diagnostics、context/paired ablation、clustered and paired bootstrap、factor/predictiveness、memory contamination、`h2_run_metadata.json`、`h2_logs/` 与 `h2_figures/`。完整清单见 [h2_protocol.md](docs/h2_protocol.md)。
+
 不要把这些目录指回仓库。`configs/*.local.yaml`、权重、`.npz` cache、数据和常见输出目录均被 `.gitignore` 排除。
 
 ## 本地 CPU 验证
@@ -107,10 +129,11 @@ python -m venv .venv
 .venv/bin/python -m pip install -e '.[test]'
 .venv/bin/python -m pytest -q
 .venv/bin/beeid synthetic-smoke
+.venv/bin/beeid h2-synthetic-smoke
 ```
 
 Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。CPU CI 也只证明单元测试与 synthetic smoke，不声称覆盖 GPU。
 
 ## 解释限制
 
-GT-box 实验只衡量 appearance upper bound，不是 detector/tracker 的端到端结果。背景可能泄漏视频、位置或场景信息；20% 扩框会改变背景占比并可能偏向某些模型；validation 来自 train 视频而非官方 validation；H1 成功不能直接证明实际跟踪的 ID Switch 会减少。完整实验结论必须等待真实服务器验证，当前均为 `SERVER_VALIDATION_PENDING`。
+GT-box 实验只衡量 appearance upper bound，不是 detector/tracker 的端到端结果。背景可能泄漏视频、位置或场景信息；扩框会改变背景占比并可能偏向某些模型；Laplacian、方向和 GT-box IoU 只是清晰度、姿态和遮挡代理；development validation 来自 train 视频而非官方 validation。H1/H2 都不能直接证明实际跟踪的 ID Switch 会减少，受控 EMA 污染也不能代替固定检测结果下的端到端 MOT 验证。

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+import re
 
 import yaml
 
@@ -24,6 +25,7 @@ class PathsConfig:
     dinov3_weights: Path
     topictrack_repo: Path
     topic_agw_weights: Path
+    h1_output_root: Path | None = None
     dino_python: Path | None = None
     topic_python: Path | None = None
 
@@ -73,6 +75,39 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class H2VariantConfig:
+    name: str
+    crop_expansion: float
+    input_size: int
+    pixel_view: str
+    blur_radius: float
+
+
+@dataclass(frozen=True)
+class H2ContaminationConfig:
+    trusted_history_length: int
+    ema_alpha: float
+    recovery_horizon: int
+    recovery_tolerance: float
+    low_quality_quantile: float
+
+
+@dataclass(frozen=True)
+class H2Config:
+    project_split_path: Path
+    allow_subset: bool
+    primary_variant: str
+    variants: tuple[H2VariantConfig, ...]
+    patch_size: int
+    density_radius_multipliers: tuple[float, ...]
+    history_length: int
+    factor_bins: int
+    bootstrap_replicates: int
+    manual_annotations_csv: Path | None
+    contamination: H2ContaminationConfig
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -80,6 +115,7 @@ class ExperimentConfig:
     dataset: DatasetConfig
     protocol: ProtocolConfig
     models: ModelConfig
+    h2: H2Config | None
 
     @property
     def manifest_path(self) -> Path:
@@ -104,6 +140,24 @@ class ExperimentConfig:
     @property
     def cache_locations_path(self) -> Path:
         return self.paths.output_root / "cache_locations.json"
+
+    @property
+    def h2_source_root(self) -> Path:
+        if self.paths.h1_output_root is None:
+            raise ConfigurationError("paths.h1_output_root is required by H2 commands")
+        return self.paths.h1_output_root
+
+    @property
+    def h2_manifest_path(self) -> Path:
+        return self.h2_source_root / "manifests" / "observations.csv"
+
+    @property
+    def h2_h1_cache_locations_path(self) -> Path:
+        return self.h2_source_root / "cache_locations.json"
+
+    @property
+    def h2_cache_locations_path(self) -> Path:
+        return self.paths.output_root / "h2_cache_locations.json"
 
     def serializable(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -190,6 +244,28 @@ def _ints(value: Any, label: str) -> tuple[int, ...]:
     return result
 
 
+def _floats(value: Any, label: str) -> tuple[float, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ConfigurationError(f"{label} must be a list of positive numbers")
+    result: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)) or float(item) <= 0:
+            raise ConfigurationError(f"{label} must contain positive numbers")
+        result.append(float(item))
+    if not result:
+        raise ConfigurationError(f"{label} must not be empty")
+    return tuple(result)
+
+
+def _bounded_float(value: Any, label: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigurationError(f"{label} must be numeric")
+    result = float(value)
+    if not low <= result <= high:
+        raise ConfigurationError(f"{label} must be between {low} and {high}")
+    return result
+
+
 def load_config(path: str | Path) -> ExperimentConfig:
     config_path = Path(path).expanduser().resolve(strict=False)
     if not config_path.is_file():
@@ -199,13 +275,13 @@ def load_config(path: str | Path) -> ExperimentConfig:
     except yaml.YAMLError as error:
         raise ConfigurationError(f"Invalid YAML in {config_path}: {error}") from error
     root = _mapping(raw, "config")
-    _keys(root, {"paths", "runtime", "dataset", "protocol", "models"}, "config")
+    _keys(root, {"paths", "runtime", "dataset", "protocol", "models", "h2"}, "config")
     base = config_path.parent
 
     p = _mapping(_require(root, "paths", "config"), "paths")
     path_keys = {
         "bee24_root", "output_root", "cache_root", "dinov3_repo", "dinov3_weights",
-        "topictrack_repo", "topic_agw_weights", "dino_python", "topic_python",
+        "topictrack_repo", "topic_agw_weights", "h1_output_root", "dino_python", "topic_python",
     }
     _keys(p, path_keys, "paths")
     paths = PathsConfig(
@@ -216,6 +292,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         dinov3_weights=_path(_require(p, "dinov3_weights", "paths"), base, "paths.dinov3_weights"),  # type: ignore[arg-type]
         topictrack_repo=_path(_require(p, "topictrack_repo", "paths"), base, "paths.topictrack_repo"),  # type: ignore[arg-type]
         topic_agw_weights=_path(_require(p, "topic_agw_weights", "paths"), base, "paths.topic_agw_weights"),  # type: ignore[arg-type]
+        h1_output_root=_path(p.get("h1_output_root"), base, "paths.h1_output_root", optional=True),
         dino_python=_path(
             p.get("dino_python"), base, "paths.dino_python", optional=True, preserve_symlink=True
         ),
@@ -345,4 +422,147 @@ def load_config(path: str | Path) -> ExperimentConfig:
         topic_config_relative=topic_relative,
     )
 
-    return ExperimentConfig(config_path, paths, runtime, dataset, protocol, models)
+    h2: H2Config | None = None
+    if "h2" in root and root["h2"] is not None:
+        h = _mapping(root["h2"], "h2")
+        _keys(
+            h,
+            {
+                "project_split", "allow_subset", "primary_variant", "variants", "patch_size",
+                "density_radius_multipliers", "history_length", "factor_bins",
+                "bootstrap_replicates", "manual_annotations_csv", "contamination",
+            },
+            "h2",
+        )
+        if paths.h1_output_root is None:
+            raise ConfigurationError("paths.h1_output_root is required when h2 is configured")
+        if paths.h1_output_root.resolve(strict=False) == paths.output_root.resolve(strict=False):
+            raise ConfigurationError("H2 output_root must differ from paths.h1_output_root")
+        if protocol.evaluation_split != "validation" or dataset.source_splits != ("train",):
+            raise ConfigurationError(
+                "H2 diagnostics are restricted to the frozen train-derived development validation split"
+            )
+
+        variant_values = _require(h, "variants", "h2")
+        if isinstance(variant_values, (str, bytes)) or not isinstance(variant_values, Sequence):
+            raise ConfigurationError("h2.variants must be a list of mappings")
+        variants: list[H2VariantConfig] = []
+        names: set[str] = set()
+        for index, value in enumerate(variant_values):
+            variant = _mapping(value, f"h2.variants[{index}]")
+            _keys(
+                variant,
+                {"name", "crop_expansion", "input_size", "pixel_view", "blur_radius"},
+                f"h2.variants[{index}]",
+            )
+            name = _require(variant, "name", f"h2.variants[{index}]")
+            if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+                raise ConfigurationError(
+                    f"h2.variants[{index}].name must match [a-z][a-z0-9_]*"
+                )
+            if name in names:
+                raise ConfigurationError(f"Duplicate H2 variant name: {name}")
+            names.add(name)
+            expansion = _bounded_float(
+                _require(variant, "crop_expansion", f"h2.variants[{index}]"),
+                f"h2.variants[{index}].crop_expansion",
+                0.0,
+                1.0,
+            )
+            variant_input = _positive_int(
+                _require(variant, "input_size", f"h2.variants[{index}]"),
+                f"h2.variants[{index}].input_size",
+            )
+            if variant_input not in {224, 256}:
+                raise ConfigurationError("H2 variant input_size must be 224 or 256")
+            pixel_view = _require(variant, "pixel_view", f"h2.variants[{index}]")
+            if pixel_view not in {"raw", "bbox_foreground_only", "context_only", "gaussian_blur"}:
+                raise ConfigurationError(
+                    "H2 pixel_view must be raw, bbox_foreground_only, context_only, or gaussian_blur"
+                )
+            blur_radius = _bounded_float(
+                variant.get("blur_radius", 0.0),
+                f"h2.variants[{index}].blur_radius",
+                0.0,
+                20.0,
+            )
+            if pixel_view == "gaussian_blur" and blur_radius <= 0:
+                raise ConfigurationError("gaussian_blur variants require blur_radius > 0")
+            if pixel_view != "gaussian_blur" and blur_radius != 0:
+                raise ConfigurationError("blur_radius must be 0 except for gaussian_blur variants")
+            if pixel_view == "context_only" and expansion <= 0:
+                raise ConfigurationError("context_only variants require positive crop_expansion")
+            variants.append(H2VariantConfig(name, expansion, variant_input, pixel_view, blur_radius))
+        if not variants:
+            raise ConfigurationError("h2.variants must not be empty")
+        primary_variant = _require(h, "primary_variant", "h2")
+        if primary_variant not in names:
+            raise ConfigurationError("h2.primary_variant must name one configured variant")
+
+        contamination_raw = _mapping(_require(h, "contamination", "h2"), "h2.contamination")
+        _keys(
+            contamination_raw,
+            {
+                "trusted_history_length", "ema_alpha", "recovery_horizon",
+                "recovery_tolerance", "low_quality_quantile",
+            },
+            "h2.contamination",
+        )
+        contamination = H2ContaminationConfig(
+            trusted_history_length=_positive_int(
+                _require(contamination_raw, "trusted_history_length", "h2.contamination"),
+                "h2.contamination.trusted_history_length",
+            ),
+            ema_alpha=_bounded_float(
+                _require(contamination_raw, "ema_alpha", "h2.contamination"),
+                "h2.contamination.ema_alpha",
+                0.0,
+                1.0,
+            ),
+            recovery_horizon=_positive_int(
+                _require(contamination_raw, "recovery_horizon", "h2.contamination"),
+                "h2.contamination.recovery_horizon",
+            ),
+            recovery_tolerance=_bounded_float(
+                _require(contamination_raw, "recovery_tolerance", "h2.contamination"),
+                "h2.contamination.recovery_tolerance",
+                0.0,
+                1.0,
+            ),
+            low_quality_quantile=_bounded_float(
+                _require(contamination_raw, "low_quality_quantile", "h2.contamination"),
+                "h2.contamination.low_quality_quantile",
+                0.01,
+                0.49,
+            ),
+        )
+        factor_bins = _positive_int(_require(h, "factor_bins", "h2"), "h2.factor_bins")
+        if factor_bins < 2 or factor_bins > 10:
+            raise ConfigurationError("h2.factor_bins must be between 2 and 10")
+        h2 = H2Config(
+            project_split_path=_path(
+                _require(h, "project_split", "h2"), base, "h2.project_split"
+            ),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(h, "allow_subset", "h2"), "h2.allow_subset"),
+            primary_variant=str(primary_variant),
+            variants=tuple(variants),
+            patch_size=_positive_int(_require(h, "patch_size", "h2"), "h2.patch_size"),
+            density_radius_multipliers=_floats(
+                _require(h, "density_radius_multipliers", "h2"),
+                "h2.density_radius_multipliers",
+            ),
+            history_length=_positive_int(
+                _require(h, "history_length", "h2"), "h2.history_length"
+            ),
+            factor_bins=factor_bins,
+            bootstrap_replicates=_positive_int(
+                _require(h, "bootstrap_replicates", "h2"),
+                "h2.bootstrap_replicates",
+            ),
+            manual_annotations_csv=_path(
+                h.get("manual_annotations_csv"), base, "h2.manual_annotations_csv", optional=True
+            ),
+            contamination=contamination,
+        )
+
+    return ExperimentConfig(config_path, paths, runtime, dataset, protocol, models, h2)

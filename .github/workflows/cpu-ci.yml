@@ -23,4 +23,6 @@ jobs:
       - name: Unit tests
         run: pytest -q
       - name: Synthetic smoke (test-only encoder, no GPU claim)
-        run: beeid synthetic-smoke
+        run: |
+          beeid synthetic-smoke
+          beeid h2-synthetic-smoke

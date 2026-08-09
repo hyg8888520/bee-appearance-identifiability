@@ -23,6 +23,12 @@ experiments/
 artifacts/
 *.npz
 
+# Local H1 result-analysis workspaces (external evidence, never source)
+/analysis/h1_full_run_*/
+/h1_analysis_work/
+/plan_review_render/
+/tmp/
+
 # Model checkpoints and tensor artifacts
 *.pth
 *.pt

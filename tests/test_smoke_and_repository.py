@@ -78,6 +78,12 @@ def test_repository_does_not_offer_fallbacks_or_commit_local_artifacts():
         assert example["dataset"]["source_splits"] == ["train"]
         assert example["dataset"]["duplicate_identity_policy"] == "error"
         assert example["dataset"]["missing_seqinfo_policy"] == "error"
+    for name in ("h2.example.yaml", "h2.local.yaml.example", "h2_smoke.example.yaml"):
+        example = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))
+        assert example["dataset"]["source_splits"] == ["train"]
+        assert example["protocol"]["evaluation_split"] == "validation"
+        assert example["paths"]["h1_output_root"] != example["paths"]["output_root"]
+        assert example["h2"]["project_split"] == "splits/project_split.yaml"
 
 
 def test_cli_help_lists_composable_commands():
@@ -86,6 +92,8 @@ def test_cli_help_lists_composable_commands():
     )
     for command in (
         "validate-data", "build-manifest", "extract", "evaluate", "report", "estimate", "run-all",
-        "synthetic-smoke",
+        "synthetic-smoke", "h2-validate", "h2-extract", "h2-signals", "h2-evaluate",
+        "h2-contamination", "h2-report", "h2-estimate", "h2-run-all", "h2-orchestrate",
+        "h2-synthetic-smoke",
     ):
         assert command in result.stdout
