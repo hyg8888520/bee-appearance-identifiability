@@ -126,7 +126,14 @@ def _require(value: Mapping[str, Any], key: str, label: str) -> Any:
     return value[key]
 
 
-def _path(value: Any, base: Path, label: str, *, optional: bool = False) -> Path | None:
+def _path(
+    value: Any,
+    base: Path,
+    label: str,
+    *,
+    optional: bool = False,
+    preserve_symlink: bool = False,
+) -> Path | None:
     if value is None and optional:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -134,7 +141,9 @@ def _path(value: Any, base: Path, label: str, *, optional: bool = False) -> Path
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = base / candidate
-    return candidate.resolve(strict=False)
+    # A venv's bin/python is normally a symlink to the base interpreter. Running
+    # the resolved target bypasses the venv and therefore loses its site-packages.
+    return candidate.absolute() if preserve_symlink else candidate.resolve(strict=False)
 
 
 def _positive_int(value: Any, label: str) -> int:
@@ -197,8 +206,12 @@ def load_config(path: str | Path) -> ExperimentConfig:
         dinov3_weights=_path(_require(p, "dinov3_weights", "paths"), base, "paths.dinov3_weights"),  # type: ignore[arg-type]
         topictrack_repo=_path(_require(p, "topictrack_repo", "paths"), base, "paths.topictrack_repo"),  # type: ignore[arg-type]
         topic_agw_weights=_path(_require(p, "topic_agw_weights", "paths"), base, "paths.topic_agw_weights"),  # type: ignore[arg-type]
-        dino_python=_path(p.get("dino_python"), base, "paths.dino_python", optional=True),
-        topic_python=_path(p.get("topic_python"), base, "paths.topic_python", optional=True),
+        dino_python=_path(
+            p.get("dino_python"), base, "paths.dino_python", optional=True, preserve_symlink=True
+        ),
+        topic_python=_path(
+            p.get("topic_python"), base, "paths.topic_python", optional=True, preserve_symlink=True
+        ),
     )
     try:
         ensure_within(paths.output_root, paths.output_root / "manifests", "manifest output")

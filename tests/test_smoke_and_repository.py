@@ -40,6 +40,26 @@ def test_config_requires_all_model_keys_and_rejects_unknown(tmp_path, config_fac
         load_config(config.config_path)
 
 
+def test_config_preserves_virtualenv_interpreter_symlink(tmp_path, config_factory):
+    target = tmp_path / "system" / "python3.11"
+    target.parent.mkdir(parents=True)
+    target.touch()
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    try:
+        interpreter.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {error}")
+
+    config = config_factory(
+        tmp_path,
+        paths={"dino_python": str(interpreter), "topic_python": str(interpreter)},
+    )
+    assert config.paths.dino_python == interpreter.absolute()
+    assert config.paths.topic_python == interpreter.absolute()
+    assert config.paths.dino_python != target.resolve()
+
+
 def test_repository_does_not_offer_fallbacks_or_commit_local_artifacts():
     root = Path(__file__).resolve().parents[1]
     source = "\n".join(path.read_text(encoding="utf-8") for path in (root / "src" / "beeid").rglob("*.py"))
