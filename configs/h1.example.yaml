@@ -20,7 +20,9 @@ runtime:
   cache_shard_size: 8192
 
 dataset:
-  source_splits: [train, test]
+  # H1 evaluates the deterministic validation subset derived from train.
+  # Do not load test: it is never used for method selection and may not ship GT metadata.
+  source_splits: [train]
   bbox_origin: one
   invalid_bbox_policy: error
   confidence_min: 0.0

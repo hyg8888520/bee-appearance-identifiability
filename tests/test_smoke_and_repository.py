@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from beeid.config import ConfigurationError, load_config
 from beeid.synthetic import synthetic_smoke
@@ -72,6 +73,9 @@ def test_repository_does_not_offer_fallbacks_or_commit_local_artifacts():
     assert "*.npz" in ignore
     assert not (root / "LICENSE").exists()
     assert "C:\\Users\\" not in source
+    for name in ("h1.example.yaml", "h1.local.yaml.example"):
+        example = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))
+        assert example["dataset"]["source_splits"] == ["train"]
 
 
 def test_cli_help_lists_composable_commands():
