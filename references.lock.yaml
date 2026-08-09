@@ -22,8 +22,8 @@ references:
     url: https://github.com/JonathonLuiten/TrackEval
     commit: 12c8791b303e0a0b50f753af204249e622d0281a
     license: MIT
-    interface: MOTChallenge format documentation/audit only
-    purpose: Format verification; not an H1 dependency
+    interface: MOTChallenge format plus HOTA, Identity, and CLEAR metric semantics audit
+    purpose: H3 formula audit and MOTChallenge export verification; not vendored or imported at runtime
   torchvision:
     url: https://github.com/pytorch/vision
     commit: 59a3e1f9f78cfe44cb989877cc6f4ea77c8a75ca

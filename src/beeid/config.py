@@ -116,6 +116,27 @@ class H25Config:
 
 
 @dataclass(frozen=True)
+class H3Config:
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    stage: str
+    fixed_detections_root: Path | None
+    history_length: int
+    quantile_knots: int
+    min_reliability: float
+    memory_alpha: float
+    update_gate: float
+    appearance_weight: float
+    motion_weight: float
+    max_normalized_distance: float
+    min_assignment_score: float
+    max_age: int
+    bootstrap_replicates: int
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -125,6 +146,7 @@ class ExperimentConfig:
     models: ModelConfig
     h2: H2Config | None
     h25: H25Config | None
+    h3: H3Config | None
 
     @property
     def manifest_path(self) -> Path:
@@ -173,6 +195,12 @@ class ExperimentConfig:
         if self.paths.h2_output_root is None:
             raise ConfigurationError("paths.h2_output_root is required by H2.5 commands")
         return self.paths.h2_output_root
+
+    @property
+    def h3_manifest_path(self) -> Path:
+        if self.paths.h1_output_root is None:
+            raise ConfigurationError("paths.h1_output_root is required by H3 commands")
+        return self.paths.h1_output_root / "manifests" / "observations.csv"
 
     def serializable(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -290,7 +318,11 @@ def load_config(path: str | Path) -> ExperimentConfig:
     except yaml.YAMLError as error:
         raise ConfigurationError(f"Invalid YAML in {config_path}: {error}") from error
     root = _mapping(raw, "config")
-    _keys(root, {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25"}, "config")
+    _keys(
+        root,
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3"},
+        "config",
+    )
     base = config_path.parent
 
     p = _mapping(_require(root, "paths", "config"), "paths")
@@ -611,4 +643,112 @@ def load_config(path: str | Path) -> ExperimentConfig:
             allow_subset=_bool(_require(value, "allow_subset", "h25"), "h25.allow_subset"),
         )
 
-    return ExperimentConfig(config_path, paths, runtime, dataset, protocol, models, h2, h25)
+    h3: H3Config | None = None
+    if "h3" in root and root["h3"] is not None:
+        value = _mapping(root["h3"], "h3")
+        _keys(
+            value,
+            {
+                "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+                "stage", "fixed_detections_root", "history_length", "quantile_knots",
+                "min_reliability", "memory_alpha", "update_gate", "appearance_weight",
+                "motion_weight", "max_normalized_distance", "min_assignment_score",
+                "max_age", "bootstrap_replicates",
+            },
+            "h3",
+        )
+        if paths.h1_output_root is None:
+            raise ConfigurationError("paths.h1_output_root is required when h3 is configured")
+        if paths.h1_output_root.resolve(strict=False) == paths.output_root.resolve(strict=False):
+            raise ConfigurationError("H3 output_root must differ from paths.h1_output_root")
+        if dataset.source_splits != ("train",):
+            raise ConfigurationError("H3 development is restricted to the official train tree")
+        stage = _require(value, "stage", "h3")
+        if stage not in {"gt_detection_boxes", "fixed_detector_boxes"}:
+            raise ConfigurationError(
+                "h3.stage must be gt_detection_boxes or fixed_detector_boxes"
+            )
+        fixed_root = _path(
+            value.get("fixed_detections_root"),
+            base,
+            "h3.fixed_detections_root",
+            optional=True,
+        )
+        if stage == "fixed_detector_boxes" and fixed_root is None:
+            raise ConfigurationError(
+                "h3.fixed_detections_root is required for fixed_detector_boxes"
+            )
+        quantile_knots = _positive_int(
+            _require(value, "quantile_knots", "h3"), "h3.quantile_knots"
+        )
+        if quantile_knots < 11 or quantile_knots > 1001 or quantile_knots % 2 == 0:
+            raise ConfigurationError("h3.quantile_knots must be an odd integer in [11, 1001]")
+        appearance_weight = _bounded_float(
+            _require(value, "appearance_weight", "h3"),
+            "h3.appearance_weight",
+            0.0,
+            1.0,
+        )
+        motion_weight = _bounded_float(
+            _require(value, "motion_weight", "h3"), "h3.motion_weight", 0.0, 1.0
+        )
+        if appearance_weight + motion_weight <= 0:
+            raise ConfigurationError("H3 appearance_weight and motion_weight cannot both be zero")
+        history_length = _positive_int(
+            _require(value, "history_length", "h3"), "h3.history_length"
+        )
+        if history_length != 5:
+            raise ConfigurationError("h3.history_length is frozen at 5")
+        h3 = H3Config(
+            protocol_lock_path=_path(
+                _require(value, "protocol_lock", "h3"), base, "h3.protocol_lock"
+            ),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(
+                _require(value, "protocol_checksum", "h3"),
+                base,
+                "h3.protocol_checksum",
+            ),  # type: ignore[arg-type]
+            project_split_path=_path(
+                _require(value, "project_split", "h3"), base, "h3.project_split"
+            ),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h3"), "h3.allow_subset"),
+            stage=str(stage),
+            fixed_detections_root=fixed_root,
+            history_length=history_length,
+            quantile_knots=quantile_knots,
+            min_reliability=_bounded_float(
+                _require(value, "min_reliability", "h3"),
+                "h3.min_reliability",
+                0.0,
+                1.0,
+            ),
+            memory_alpha=_bounded_float(
+                _require(value, "memory_alpha", "h3"), "h3.memory_alpha", 0.0, 1.0
+            ),
+            update_gate=_bounded_float(
+                _require(value, "update_gate", "h3"), "h3.update_gate", 0.0, 1.0
+            ),
+            appearance_weight=appearance_weight,
+            motion_weight=motion_weight,
+            max_normalized_distance=_bounded_float(
+                _require(value, "max_normalized_distance", "h3"),
+                "h3.max_normalized_distance",
+                0.01,
+                100.0,
+            ),
+            min_assignment_score=_bounded_float(
+                _require(value, "min_assignment_score", "h3"),
+                "h3.min_assignment_score",
+                0.0,
+                1.0,
+            ),
+            max_age=_positive_int(_require(value, "max_age", "h3"), "h3.max_age"),
+            bootstrap_replicates=_positive_int(
+                _require(value, "bootstrap_replicates", "h3"),
+                "h3.bootstrap_replicates",
+            ),
+        )
+
+    return ExperimentConfig(
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3
+    )

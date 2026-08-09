@@ -1,4 +1,4 @@
-"""Composable command-line interface for the BEE24 H1/H2/H2.5 benchmarks."""
+"""Composable command-line interface for the BEE24 H1 through H3 experiments."""
 
 from __future__ import annotations
 
@@ -35,11 +35,18 @@ from .h25.experiment import run_h25_experiment
 from .h25.report import generate_h25_report
 from .h25.synthetic import h25_synthetic_smoke
 from .h3.protocol import validate_h3_protocol
+from .h3.core import validate_h3_inputs
+from .h3.experiment import run_h3_tracking
+from .h3.features import extract_h3_features
+from .h3.report import generate_h3_report
+from .h3.signals import build_h3_signals
+from .h3.synthetic import h3_synthetic_smoke
+from .h3.thresholds import fit_h3_thresholds
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="beeid", description="BEE24 H1 appearance and H2 reliability benchmarks"
+        prog="beeid", description="BEE24 H1 appearance through H3 tracking experiments"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -113,6 +120,29 @@ def _parser() -> argparse.ArgumentParser:
     )
     h3_validate.add_argument("--protocol", type=Path, required=True)
     h3_validate.add_argument("--checksum", type=Path)
+    configured("h3-validate", "Validate H3 development inputs and final-test isolation")
+    h3_extract = configured(
+        "h3-extract", "Extract/resume frozen features for project-train and development"
+    )
+    h3_extract.add_argument("--model", choices=REAL_MODEL_NAMES, required=True)
+    configured("h3-signals", "Build outcome-blind H3 observation signal cache")
+    h3_fit = configured(
+        "h3-fit-thresholds", "Fit causal reliability calibrators on project_train only"
+    )
+    h3_fit.add_argument("--models", nargs="+", choices=REAL_MODEL_NAMES, required=True)
+    h3_track = configured("h3-track", "Run the four frozen H3 association variants")
+    h3_track.add_argument("--models", nargs="+", choices=REAL_MODEL_NAMES, required=True)
+    h3_report = configured("h3-report", "Generate H3 GT-box metrics and locked metadata")
+    h3_report.add_argument("--models", nargs="+", choices=REAL_MODEL_NAMES, required=True)
+    h3_all = configured("h3-run-all", "Run the complete H3 GT-box development workflow")
+    h3_all.add_argument(
+        "--models", nargs="+", choices=REAL_MODEL_NAMES, default=["resnet50", "dinov3"]
+    )
+    h3_all.add_argument("--confirm-full", action="store_true")
+    h3_synthetic = subparsers.add_parser(
+        "h3-synthetic-smoke", help="Run CPU-only H3 tracking smoke with a test-only encoder"
+    )
+    h3_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -203,6 +233,32 @@ def _run_h25_all(config: object, models: list[str], confirm_full: bool) -> dict[
     }
 
 
+def _run_h3_all(config: object, models: list[str], confirm_full: bool) -> dict[str, object]:
+    h3 = config.h3  # type: ignore[attr-defined]
+    if h3 is None:
+        raise RuntimeError("H3 commands require an h3 config section")
+    if not h3.allow_subset and not confirm_full:
+        raise RuntimeError(
+            "Full H3 development is gated; pass --confirm-full only after synthetic "
+            "and real-data smoke tests"
+        )
+    validate_h3_inputs(config)  # type: ignore[arg-type]
+    build_h3_signals(config)  # type: ignore[arg-type]
+    for model in models:
+        extract_h3_features(config, model)  # type: ignore[arg-type]
+    fit_h3_thresholds(config, models)  # type: ignore[arg-type]
+    tracking = run_h3_tracking(config, models)  # type: ignore[arg-type]
+    metadata = generate_h3_report(config, models)  # type: ignore[arg-type]
+    return {
+        "status": "completed_development_gt_boxes",
+        "models": models,
+        "assignment_rows": tracking["assignment_row_count"],
+        "metadata_status": metadata["status"],
+        "fixed_detector_boxes": "SERVER_VALIDATION_PENDING",
+        "final_test_read": False,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
@@ -212,6 +268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h2_synthetic_smoke(arguments.output)
         elif arguments.command == "h25-synthetic-smoke":
             result = h25_synthetic_smoke(arguments.output)
+        elif arguments.command == "h3-synthetic-smoke":
+            result = h3_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         else:
@@ -287,6 +345,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = _run_h25_all(
                     config, arguments.models, arguments.confirm_full
                 )
+            elif arguments.command == "h3-validate":
+                result = validate_h3_inputs(config).audit
+            elif arguments.command == "h3-extract":
+                result = extract_h3_features(config, arguments.model)
+            elif arguments.command == "h3-signals":
+                result = build_h3_signals(config)
+            elif arguments.command == "h3-fit-thresholds":
+                result = fit_h3_thresholds(config, arguments.models)
+            elif arguments.command == "h3-track":
+                result = run_h3_tracking(config, arguments.models)
+            elif arguments.command == "h3-report":
+                result = generate_h3_report(config, arguments.models)
+            elif arguments.command == "h3-run-all":
+                result = _run_h3_all(config, arguments.models, arguments.confirm_full)
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
