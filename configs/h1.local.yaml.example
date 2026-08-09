@@ -12,6 +12,6 @@ paths:
   topic_python: /path/to/venvs/beeid-topic/bin/python
 runtime: {device: 'cuda:0', batch_size: 128, num_workers: 8, amp: true, amp_dtype: float16, seed: 24, cache_shard_size: 8192}
 # H1 evaluates a deterministic train-derived validation subset; test is not loaded.
-dataset: {source_splits: [train], bbox_origin: one, invalid_bbox_policy: error, duplicate_identity_policy: error, confidence_min: 0.0, validation_fraction: 0.2, max_videos: null, max_frames_per_video: null, video_ids: [], deep_validate_images: false}
+dataset: {source_splits: [train], bbox_origin: one, invalid_bbox_policy: error, duplicate_identity_policy: error, missing_seqinfo_policy: error, confidence_min: 0.0, validation_fraction: 0.2, max_videos: null, max_frames_per_video: null, video_ids: [], deep_validate_images: false}
 protocol: {deltas: [1, 5, 10, 25], crop_expansion: 0.2, input_size: 224, hard_negative_k: 5, evaluation_split: validation, failure_top_k: 25}
 models: {resnet_weights: IMAGENET1K_V2, dinov3_hub_model: dinov3_vits16, dinov3_feature_source: patch_mean, topic_config_relative: fast-reid/configs/bee/AGW_S50.yml}

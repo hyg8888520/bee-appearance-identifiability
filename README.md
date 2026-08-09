@@ -12,7 +12,7 @@
 
 ## 方法概览
 
-- 从 `train|test/<video>/seqinfo.ini`、`img1/`、`gt/gt.txt` 读取 MOT 数据；身份定义为 `(video_id, track_id)`。
+- 从 `train|test/<video>/seqinfo.ini`、`img1/`、`gt/gt.txt` 读取 MOT 数据；身份定义为 `(video_id, track_id)`。缺失 `seqinfo.ini` 默认报错，也可显式设置 `missing_seqinfo_policy: infer_from_images`，从经过帧名、扩展名、连续性和尺寸验证的图片目录推断，并生成审计记录。
 - one-based MOT 坐标转换为 zero-based 半开区间；bbox 中心扩展 20%（每侧 10%），再 `floor/ceil` 并裁边；crop 按需读取，不落盘数十万图片。
 - train 视频按 `SHA256("24:<video_id>")` 排序，选取 `max(1, round(20% × n))` 作为项目 validation；test 不参与选择。
 - 查询帧 `t` 对候选帧 `t+[1,5,10,25]`。Full gallery 包含候选帧所有有效目标；Hard gallery 是唯一 positive 加空间最近的最多 5 个不同身份。

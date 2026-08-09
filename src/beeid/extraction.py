@@ -35,6 +35,7 @@ def extract_features(
         "manifest_sha256": manifest_sha256(config.manifest_path),
         "evaluation_split": config.protocol.evaluation_split,
         "duplicate_identity_policy": config.dataset.duplicate_identity_policy,
+        "missing_seqinfo_policy": config.dataset.missing_seqinfo_policy,
         "model": model_part,
         "crop_expansion": config.protocol.crop_expansion,
         "input_size": config.protocol.input_size,

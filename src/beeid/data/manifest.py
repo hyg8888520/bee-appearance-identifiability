@@ -213,21 +213,53 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
         )
     observations: list[Observation] = []
     seen_ids: set[str] = set()
-    image_directory_fallbacks: list[dict[str, object]] = []
+    sequence_metadata: list[dict[str, object]] = []
     for key, split in sorted(assignments.items()):
         source_split, video_id = key.split("/", 1)
-        sequence = read_seqinfo(root / source_split / video_id, source_split)
-        if sequence.image_directory_fallback_used:
-            image_directory_fallbacks.append(
+        sequence = read_seqinfo(
+            root / source_split / video_id,
+            source_split,
+            config.dataset.missing_seqinfo_policy,
+        )
+        seqinfo_path = sequence.directory / "seqinfo.ini"
+        sequence_metadata.append(
+            {
+                "source_split": source_split,
+                "resolved_split": split,
+                "video_id": video_id,
+                "metadata_source": sequence.metadata_source,
+                "seqinfo_path": str(seqinfo_path),
+                "seqinfo_sha256": sha256_file(seqinfo_path) if seqinfo_path.is_file() else None,
+                "declared_imDir": sequence.declared_image_directory,
+                "resolved_image_directory": str(sequence.image_directory),
+                "image_directory_fallback_used": sequence.image_directory_fallback_used,
+                "image_extension": sequence.image_extension,
+                "image_count": sequence.image_count,
+                "image_inventory_sha256": sequence.image_inventory_sha256,
+                "sequence_length": sequence.sequence_length,
+                "image_width": sequence.image_width,
+                "image_height": sequence.image_height,
+                "frame_rate": sequence.frame_rate,
+                "frame_rate_status": "unknown" if sequence.frame_rate == 0 else "declared",
+            }
+        )
+        if not validate_only:
+            atomic_write_json(
+                config.sequence_metadata_audit_path,
                 {
-                    "source_split": source_split,
-                    "resolved_split": split,
-                    "video_id": video_id,
-                    "seqinfo_path": str(sequence.directory / "seqinfo.ini"),
-                    "declared_imDir": sequence.declared_image_directory,
-                    "resolved_image_directory": str(sequence.image_directory),
-                    "reason": "declared imDir missing; exactly one canonical directory exists",
-                }
+                    "format_version": 1,
+                    "missing_seqinfo_policy": config.dataset.missing_seqinfo_policy,
+                    "sequence_count": len(sequence_metadata),
+                    "inferred_sequence_count": sum(
+                        item["metadata_source"] == "inferred_from_images"
+                        for item in sequence_metadata
+                    ),
+                    "image_directory_fallback_count": sum(
+                        bool(item["image_directory_fallback_used"])
+                        for item in sequence_metadata
+                    ),
+                    "sequences": sequence_metadata,
+                },
             )
         ground_truth = sequence.directory / "gt" / "gt.txt"
         if not ground_truth.is_file():
@@ -293,6 +325,12 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
     )
     excluded_duplicate_rows = int(duplicate_audit["excluded_source_row_count"])
     skipped_manifest_rows = len(observations) - len(valid)
+    inferred_sequences = [
+        item for item in sequence_metadata if item["metadata_source"] == "inferred_from_images"
+    ]
+    image_directory_fallbacks = [
+        item for item in sequence_metadata if item["image_directory_fallback_used"]
+    ]
     if excluded_duplicate_rows:
         skip_reasons["duplicate_identity_conflict"] = excluded_duplicate_rows
         skip_reasons = dict(sorted(skip_reasons.items()))
@@ -312,6 +350,9 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
                 "excluded_source_row_fraction"
             ],
             "duplicate_identity_audit": str(config.duplicate_identity_audit_path),
+            "sequence_metadata_audit": str(config.sequence_metadata_audit_path),
+            "inferred_sequence_count": len(inferred_sequences),
+            "inferred_sequences": inferred_sequences,
             "image_directory_fallback_count": len(image_directory_fallbacks),
             "image_directory_fallbacks": image_directory_fallbacks,
             "skip_reasons": skip_reasons,

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from beeid.data.manifest import MANIFEST_FIELDS, build_manifest, load_manifest, resolved_video_splits
 from beeid.data.mot import MotDataError, expanded_crop_box, parse_mot_row, read_seqinfo, row_to_observation
@@ -69,6 +70,54 @@ def test_missing_declared_image_directory_rejects_ambiguous_fallback(
     )
     with pytest.raises(MotDataError, match="fallback is ambiguous"):
         read_seqinfo(video, "train")
+
+
+def test_missing_seqinfo_can_be_inferred_from_validated_images(
+    tmp_path, config_factory, video_factory
+):
+    config = config_factory(
+        tmp_path,
+        dataset={"missing_seqinfo_policy": "infer_from_images"},
+    )
+    video = video_factory(config.paths.bee24_root, "train", "missing-seqinfo")
+    (video / "seqinfo.ini").unlink()
+
+    sequence = read_seqinfo(video, "train", "infer_from_images")
+    assert sequence.metadata_source == "inferred_from_images"
+    assert sequence.image_directory == video / "img1"
+    assert sequence.sequence_length == 4
+    assert (sequence.image_width, sequence.image_height) == (100, 80)
+    assert sequence.frame_rate == 0
+    assert sequence.image_count == 4
+    assert sequence.image_inventory_sha256
+
+    build_manifest(config)
+    audit = json.loads(config.sequence_metadata_audit_path.read_text(encoding="utf-8"))
+    assert audit["missing_seqinfo_policy"] == "infer_from_images"
+    assert audit["inferred_sequence_count"] == 1
+    assert audit["sequences"][0]["video_id"] == "missing-seqinfo"
+    assert audit["sequences"][0]["seqinfo_sha256"] is None
+    stats = json.loads(config.manifest_stats_path.read_text(encoding="utf-8"))
+    assert stats["inferred_sequence_count"] == 1
+
+
+def test_missing_seqinfo_inference_rejects_inconsistent_image_dimensions(
+    tmp_path, config_factory, video_factory
+):
+    config = config_factory(tmp_path)
+    video = video_factory(config.paths.bee24_root, "train", "bad-size")
+    (video / "seqinfo.ini").unlink()
+    Image.new("RGB", (99, 80)).save(video / "img1" / "000004.jpg")
+    with pytest.raises(MotDataError, match="inconsistent image size"):
+        read_seqinfo(video, "train", "infer_from_images")
+
+
+def test_missing_seqinfo_is_strict_by_default(tmp_path, config_factory, video_factory):
+    config = config_factory(tmp_path)
+    video = video_factory(config.paths.bee24_root, "train", "strict-missing")
+    (video / "seqinfo.ini").unlink()
+    with pytest.raises(MotDataError, match="Missing seqinfo.ini"):
+        build_manifest(config)
 
 
 @pytest.mark.parametrize("line", ["1,2,3", "x,2,1,1,2,2", "1,2,1,1,nan,2", "1.5,2,1,1,2,2"])

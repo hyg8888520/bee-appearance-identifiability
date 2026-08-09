@@ -26,6 +26,7 @@ dataset:
   bbox_origin: one
   invalid_bbox_policy: error
   duplicate_identity_policy: error
+  missing_seqinfo_policy: error
   confidence_min: 0.0
   validation_fraction: 0.2
   max_videos: null

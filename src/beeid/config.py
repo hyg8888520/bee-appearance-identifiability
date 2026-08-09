@@ -45,6 +45,7 @@ class DatasetConfig:
     bbox_origin: str
     invalid_bbox_policy: str
     duplicate_identity_policy: str
+    missing_seqinfo_policy: str
     confidence_min: float
     validation_fraction: float
     max_videos: int | None
@@ -91,6 +92,10 @@ class ExperimentConfig:
     @property
     def duplicate_identity_audit_path(self) -> Path:
         return self.paths.output_root / "manifests" / "duplicate_identity_audit.json"
+
+    @property
+    def sequence_metadata_audit_path(self) -> Path:
+        return self.paths.output_root / "manifests" / "sequence_metadata_audit.json"
 
     @property
     def resolved_split_path(self) -> Path:
@@ -252,7 +257,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     dataset_keys = {
         "source_splits", "bbox_origin", "invalid_bbox_policy", "confidence_min",
         "validation_fraction", "max_videos", "max_frames_per_video", "video_ids",
-        "deep_validate_images", "duplicate_identity_policy",
+        "deep_validate_images", "duplicate_identity_policy", "missing_seqinfo_policy",
     }
     _keys(d, dataset_keys, "dataset")
     source_splits = _strings(_require(d, "source_splits", "dataset"), "dataset.source_splits")
@@ -261,6 +266,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     bbox_origin = _require(d, "bbox_origin", "dataset")
     invalid_policy = _require(d, "invalid_bbox_policy", "dataset")
     duplicate_policy = _require(d, "duplicate_identity_policy", "dataset")
+    missing_seqinfo_policy = _require(d, "missing_seqinfo_policy", "dataset")
     if bbox_origin not in {"one", "zero"}:
         raise ConfigurationError("dataset.bbox_origin must be one or zero")
     if invalid_policy not in {"error", "skip"}:
@@ -268,6 +274,10 @@ def load_config(path: str | Path) -> ExperimentConfig:
     if duplicate_policy not in {"error", "exclude_conflict"}:
         raise ConfigurationError(
             "dataset.duplicate_identity_policy must be error or exclude_conflict"
+        )
+    if missing_seqinfo_policy not in {"error", "infer_from_images"}:
+        raise ConfigurationError(
+            "dataset.missing_seqinfo_policy must be error or infer_from_images"
         )
     confidence_min = float(_require(d, "confidence_min", "dataset"))
     validation_fraction = float(_require(d, "validation_fraction", "dataset"))
@@ -278,6 +288,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         bbox_origin=bbox_origin,
         invalid_bbox_policy=invalid_policy,
         duplicate_identity_policy=duplicate_policy,
+        missing_seqinfo_policy=missing_seqinfo_policy,
         confidence_min=confidence_min,
         validation_fraction=validation_fraction,
         max_videos=_optional_positive_int(d.get("max_videos"), "dataset.max_videos"),

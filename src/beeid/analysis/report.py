@@ -291,6 +291,10 @@ def generate_report(config: ExperimentConfig, model_names: Sequence[str]) -> dic
             json.loads(config.duplicate_identity_audit_path.read_text(encoding="utf-8"))
             if config.duplicate_identity_audit_path.is_file() else None
         ),
+        "sequence_metadata_audit": (
+            json.loads(config.sequence_metadata_audit_path.read_text(encoding="utf-8"))
+            if config.sequence_metadata_audit_path.is_file() else None
+        ),
         "dataset_license": "LICENSE_NOT_STATED_BY_SOURCE",
         "environment": _environment(),
         "query_counts": {
@@ -311,6 +315,7 @@ def generate_report(config: ExperimentConfig, model_names: Sequence[str]) -> dic
             "summary.csv", "per_video_results.csv", "size_analysis.csv", "query_results.csv",
             "failure_cases.csv", "resolved_config.yaml", "resolved_split.yaml", "logs", "figures",
             "manifests/duplicate_identity_audit.json",
+            "manifests/sequence_metadata_audit.json",
         ],
         "failure_figure_count": len(rendered_figures),
         "limitations": [

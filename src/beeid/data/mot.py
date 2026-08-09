@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import configparser
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, UnidentifiedImageError
 
 
 class MotDataError(ValueError):
@@ -20,13 +23,16 @@ class SequenceInfo:
     source_split: str
     directory: Path
     image_directory: Path
-    declared_image_directory: str
+    declared_image_directory: str | None
     image_directory_fallback_used: bool
     image_extension: str
     frame_rate: int
     sequence_length: int
     image_width: int
     image_height: int
+    metadata_source: str
+    image_count: int | None
+    image_inventory_sha256: str | None
 
     def image_path(self, frame: int) -> Path:
         return self.image_directory / f"{frame:06d}{self.image_extension}"
@@ -112,10 +118,121 @@ class Observation:
         return asdict(self)
 
 
-def read_seqinfo(video_directory: Path, source_split: str) -> SequenceInfo:
+_SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+
+def _canonical_image_directory(video_directory: Path) -> Path:
+    candidates = [
+        video_directory / name
+        for name in ("img1", "images")
+        if (video_directory / name).is_dir()
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise MotDataError(
+            f"Cannot infer sequence metadata: neither {video_directory / 'img1'} nor "
+            f"{video_directory / 'images'} exists"
+        )
+    raise MotDataError(
+        "Cannot infer sequence metadata because image directory is ambiguous: "
+        + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
+def _infer_seqinfo_from_images(video_directory: Path, source_split: str) -> SequenceInfo:
+    image_directory = _canonical_image_directory(video_directory)
+    image_files = sorted(
+        path
+        for path in image_directory.iterdir()
+        if path.is_file() and path.suffix.lower() in _SUPPORTED_IMAGE_EXTENSIONS
+    )
+    if not image_files:
+        raise MotDataError(f"Cannot infer sequence metadata: no supported images in {image_directory}")
+    extensions = {path.suffix for path in image_files}
+    if len(extensions) != 1:
+        raise MotDataError(
+            f"Cannot infer sequence metadata: mixed image extensions in {image_directory}: "
+            + ", ".join(sorted(extensions))
+        )
+
+    frame_files: dict[int, Path] = {}
+    for image_path in image_files:
+        if len(image_path.stem) != 6 or not image_path.stem.isdigit():
+            raise MotDataError(
+                "Cannot infer sequence metadata: expected six-digit frame filename, got "
+                f"{image_path.name!r}"
+            )
+        frame = int(image_path.stem)
+        if frame <= 0 or frame in frame_files:
+            raise MotDataError(
+                f"Cannot infer sequence metadata: invalid or duplicate frame {frame} in {image_directory}"
+            )
+        frame_files[frame] = image_path
+
+    sequence_length = max(frame_files)
+    missing_frames = sorted(set(range(1, sequence_length + 1)) - set(frame_files))
+    if missing_frames:
+        preview = ", ".join(str(frame) for frame in missing_frames[:10])
+        suffix = " ..." if len(missing_frames) > 10 else ""
+        raise MotDataError(
+            f"Cannot infer sequence metadata: non-contiguous frames in {image_directory}; "
+            f"missing {preview}{suffix}"
+        )
+
+    expected_size: tuple[int, int] | None = None
+    inventory = hashlib.sha256()
+    for frame in range(1, sequence_length + 1):
+        image_path = frame_files[frame]
+        try:
+            with Image.open(image_path) as image:
+                size = image.size
+        except (OSError, UnidentifiedImageError) as error:
+            raise MotDataError(f"Cannot read image metadata from {image_path}: {error}") from error
+        if expected_size is None:
+            expected_size = size
+        elif size != expected_size:
+            raise MotDataError(
+                f"Cannot infer sequence metadata: inconsistent image size at {image_path}: "
+                f"{size}, expected {expected_size}"
+            )
+        inventory.update(
+            f"{image_path.name}\0{image_path.stat().st_size}\0{size[0]}x{size[1]}\n".encode("utf-8")
+        )
+    assert expected_size is not None
+    return SequenceInfo(
+        video_id=video_directory.name,
+        source_split=source_split,
+        directory=video_directory,
+        image_directory=image_directory,
+        declared_image_directory=None,
+        image_directory_fallback_used=False,
+        image_extension=next(iter(extensions)),
+        frame_rate=0,
+        sequence_length=sequence_length,
+        image_width=expected_size[0],
+        image_height=expected_size[1],
+        metadata_source="inferred_from_images",
+        image_count=len(frame_files),
+        image_inventory_sha256=inventory.hexdigest(),
+    )
+
+
+def read_seqinfo(
+    video_directory: Path,
+    source_split: str,
+    missing_policy: str = "error",
+) -> SequenceInfo:
     path = video_directory / "seqinfo.ini"
     if not path.is_file():
-        raise MotDataError(f"Missing seqinfo.ini: {path}")
+        if missing_policy == "infer_from_images":
+            return _infer_seqinfo_from_images(video_directory, source_split)
+        if missing_policy != "error":
+            raise MotDataError(f"Unknown missing seqinfo policy: {missing_policy}")
+        raise MotDataError(
+            f"Missing seqinfo.ini: {path}; set dataset.missing_seqinfo_policy to "
+            "infer_from_images to use validated in-memory inference"
+        )
     parser = configparser.ConfigParser()
     try:
         parser.read(path, encoding="utf-8")
@@ -162,6 +279,9 @@ def read_seqinfo(video_directory: Path, source_split: str) -> SequenceInfo:
             sequence_length=section.getint("seqLength"),
             image_width=section.getint("imWidth"),
             image_height=section.getint("imHeight"),
+            metadata_source="seqinfo.ini",
+            image_count=None,
+            image_inventory_sha256=None,
         )
     except (KeyError, ValueError, configparser.Error) as error:
         raise MotDataError(f"Invalid seqinfo.ini {path}: {error}") from error
