@@ -44,6 +44,7 @@ class DatasetConfig:
     source_splits: tuple[str, ...]
     bbox_origin: str
     invalid_bbox_policy: str
+    duplicate_identity_policy: str
     confidence_min: float
     validation_fraction: float
     max_videos: int | None
@@ -86,6 +87,10 @@ class ExperimentConfig:
     @property
     def manifest_stats_path(self) -> Path:
         return self.paths.output_root / "manifests" / "manifest_stats.json"
+
+    @property
+    def duplicate_identity_audit_path(self) -> Path:
+        return self.paths.output_root / "manifests" / "duplicate_identity_audit.json"
 
     @property
     def resolved_split_path(self) -> Path:
@@ -247,7 +252,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     dataset_keys = {
         "source_splits", "bbox_origin", "invalid_bbox_policy", "confidence_min",
         "validation_fraction", "max_videos", "max_frames_per_video", "video_ids",
-        "deep_validate_images",
+        "deep_validate_images", "duplicate_identity_policy",
     }
     _keys(d, dataset_keys, "dataset")
     source_splits = _strings(_require(d, "source_splits", "dataset"), "dataset.source_splits")
@@ -255,10 +260,15 @@ def load_config(path: str | Path) -> ExperimentConfig:
         raise ConfigurationError("dataset.source_splits may only contain train and test")
     bbox_origin = _require(d, "bbox_origin", "dataset")
     invalid_policy = _require(d, "invalid_bbox_policy", "dataset")
+    duplicate_policy = _require(d, "duplicate_identity_policy", "dataset")
     if bbox_origin not in {"one", "zero"}:
         raise ConfigurationError("dataset.bbox_origin must be one or zero")
     if invalid_policy not in {"error", "skip"}:
         raise ConfigurationError("dataset.invalid_bbox_policy must be error or skip")
+    if duplicate_policy not in {"error", "exclude_conflict"}:
+        raise ConfigurationError(
+            "dataset.duplicate_identity_policy must be error or exclude_conflict"
+        )
     confidence_min = float(_require(d, "confidence_min", "dataset"))
     validation_fraction = float(_require(d, "validation_fraction", "dataset"))
     if not 0.0 < validation_fraction < 1.0:
@@ -267,6 +277,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         source_splits=source_splits,
         bbox_origin=bbox_origin,
         invalid_bbox_policy=invalid_policy,
+        duplicate_identity_policy=duplicate_policy,
         confidence_min=confidence_min,
         validation_fraction=validation_fraction,
         max_videos=_optional_positive_int(d.get("max_videos"), "dataset.max_videos"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,43 @@ def test_duplicate_identity_in_frame_is_rejected(tmp_path, config_factory, video
     ])
     with pytest.raises(MotDataError, match="Duplicate identity"):
         build_manifest(config)
+    audit = json.loads(config.duplicate_identity_audit_path.read_text(encoding="utf-8"))
+    assert audit["conflict_key_count"] == 1
+    assert audit["excluded_source_row_count"] == 0
+    assert [item["line_number"] for item in audit["conflicts"][0]["rows"]] == [1, 2]
+
+
+def test_duplicate_identity_conflict_can_be_excluded_with_full_audit(
+    tmp_path, config_factory, video_factory
+):
+    config = config_factory(
+        tmp_path,
+        dataset={"duplicate_identity_policy": "exclude_conflict"},
+    )
+    video_factory(config.paths.bee24_root, "train", "dup", rows=[
+        "1,2,10,10,10,10,1,1,1",
+        "1,2,20,20,10,10,1,1,1",
+        "2,2,12,12,10,10,1,1,1",
+        "2,3,40,20,10,10,1,1,1",
+    ])
+    observations = build_manifest(config)
+    assert [(item.frame, item.track_id) for item in observations] == [(2, 2), (2, 3)]
+
+    audit = json.loads(config.duplicate_identity_audit_path.read_text(encoding="utf-8"))
+    assert audit["policy"] == "exclude_conflict"
+    assert audit["conflict_key_count"] == 1
+    assert audit["excluded_source_row_count"] == 2
+    assert audit["excluded_source_row_fraction"] == 0.5
+    assert audit["affected_sequences"] == ["train/dup"]
+    assert [item["line_number"] for item in audit["conflicts"][0]["rows"]] == [1, 2]
+
+    stats = json.loads(config.manifest_stats_path.read_text(encoding="utf-8"))
+    assert stats["source_observation_count_before_duplicate_filter"] == 4
+    assert stats["observation_count"] == 2
+    assert stats["skipped_manifest_observation_count"] == 0
+    assert stats["skipped_observation_count"] == 2
+    assert stats["duplicate_identity_conflict_key_count"] == 1
+    assert stats["skip_reasons"]["duplicate_identity_conflict"] == 2
 
 
 def test_partial_out_of_bounds_clips_but_fully_outside_errors(tmp_path, config_factory, video_factory):

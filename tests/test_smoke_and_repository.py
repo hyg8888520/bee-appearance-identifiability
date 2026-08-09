@@ -76,6 +76,7 @@ def test_repository_does_not_offer_fallbacks_or_commit_local_artifacts():
     for name in ("h1.example.yaml", "h1.local.yaml.example"):
         example = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))
         assert example["dataset"]["source_splits"] == ["train"]
+        assert example["dataset"]["duplicate_identity_policy"] == "error"
 
 
 def test_cli_help_lists_composable_commands():

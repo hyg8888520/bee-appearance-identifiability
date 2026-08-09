@@ -50,6 +50,7 @@ def make_config(tmp_path: Path, **overrides: Any) -> ExperimentConfig:
         },
         "dataset": {
             "source_splits": ["train"], "bbox_origin": "one", "invalid_bbox_policy": "error",
+            "duplicate_identity_policy": "error",
             "confidence_min": 0.0, "validation_fraction": 0.2, "max_videos": None,
             "max_frames_per_video": None, "video_ids": [], "deep_validate_images": True,
         },

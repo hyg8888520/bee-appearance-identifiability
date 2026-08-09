@@ -28,6 +28,111 @@ _FLOAT_FIELDS = {
     "confidence", "visibility",
 }
 
+_RawIdentityKey = tuple[str, str, int, int]
+
+
+def _scan_duplicate_identities(
+    config: ExperimentConfig,
+    assignments: dict[str, str],
+) -> tuple[set[_RawIdentityKey], dict[str, object]]:
+    """Pre-scan every selected GT row before choosing how to handle conflicts."""
+    first_rows: dict[_RawIdentityKey, dict[str, object]] = {}
+    conflicts: dict[_RawIdentityKey, list[dict[str, object]]] = {}
+    gt_sources: list[dict[str, object]] = []
+    selected_row_count = 0
+
+    for key, resolved_split in sorted(assignments.items()):
+        source_split, video_id = key.split("/", 1)
+        ground_truth = config.paths.bee24_root / source_split / video_id / "gt" / "gt.txt"
+        if not ground_truth.is_file():
+            raise MotDataError(f"Missing ground truth: {ground_truth}")
+        sequence_row_count = 0
+        for line_number, line in enumerate(
+            ground_truth.read_text(encoding="utf-8-sig").splitlines(), start=1
+        ):
+            if not line.strip():
+                continue
+            row = parse_mot_row(line, ground_truth, line_number)
+            if (
+                config.dataset.max_frames_per_video is not None
+                and row.frame > config.dataset.max_frames_per_video
+            ):
+                continue
+            selected_row_count += 1
+            sequence_row_count += 1
+            identity_key = (source_split, video_id, row.frame, row.track_id)
+            detail: dict[str, object] = {
+                "source_split": source_split,
+                "resolved_split": resolved_split,
+                "video_id": video_id,
+                "frame": row.frame,
+                "track_id": row.track_id,
+                "gt_path": str(ground_truth),
+                "line_number": line_number,
+                "raw_line": line,
+                "raw_xywh": [row.raw_x, row.raw_y, row.raw_w, row.raw_h],
+                "confidence": row.confidence,
+                "object_class": row.object_class,
+                "visibility": row.visibility,
+            }
+            if identity_key in first_rows:
+                if identity_key not in conflicts:
+                    conflicts[identity_key] = [first_rows[identity_key]]
+                conflicts[identity_key].append(detail)
+            else:
+                first_rows[identity_key] = detail
+        gt_sources.append(
+            {
+                "source_split": source_split,
+                "video_id": video_id,
+                "gt_path": str(ground_truth),
+                "gt_sha256": sha256_file(ground_truth),
+                "selected_row_count": sequence_row_count,
+            }
+        )
+
+    conflict_details: list[dict[str, object]] = []
+    for identity_key in sorted(conflicts):
+        source_split, video_id, frame, track_id = identity_key
+        conflict_details.append(
+            {
+                "source_split": source_split,
+                "video_id": video_id,
+                "frame": frame,
+                "track_id": track_id,
+                "rows": conflicts[identity_key],
+            }
+        )
+    excluded_row_count = sum(len(item["rows"]) for item in conflict_details)  # type: ignore[arg-type]
+    conflict_keys = set(conflicts)
+    report: dict[str, object] = {
+        "format_version": 1,
+        "policy": config.dataset.duplicate_identity_policy,
+        "scan_scope": "all selected source GT rows before manifest construction",
+        "identity_key": ["source_split", "video_id", "frame", "track_id"],
+        "selected_source_row_count": selected_row_count,
+        "conflict_key_count": len(conflict_keys),
+        "excluded_source_row_count": (
+            excluded_row_count
+            if config.dataset.duplicate_identity_policy == "exclude_conflict"
+            else 0
+        ),
+        "excluded_source_row_fraction": (
+            excluded_row_count / selected_row_count
+            if selected_row_count and config.dataset.duplicate_identity_policy == "exclude_conflict"
+            else 0.0
+        ),
+        "affected_sequences": sorted({f"{key[0]}/{key[1]}" for key in conflict_keys}),
+        "action": (
+            "excluded every row belonging to each conflicting identity key"
+            if config.dataset.duplicate_identity_policy == "exclude_conflict"
+            else "none; strict error policy"
+        ),
+        "gt_sources": gt_sources,
+        "conflicts": conflict_details,
+    }
+    return conflict_keys, report
+
 
 def resolved_video_splits(config: ExperimentConfig) -> tuple[dict[str, str], dict[str, object]]:
     available: dict[str, list[str]] = {}
@@ -91,6 +196,21 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
             {"benchmark_started_at_utc": datetime.now(timezone.utc).isoformat()},
         )
     assignments, split_metadata = resolved_video_splits(config)
+    duplicate_keys, duplicate_audit = _scan_duplicate_identities(config, assignments)
+    if not validate_only:
+        atomic_write_json(config.duplicate_identity_audit_path, duplicate_audit)
+    if duplicate_keys and config.dataset.duplicate_identity_policy == "error":
+        first_conflict = duplicate_audit["conflicts"][0]  # type: ignore[index]
+        rows = first_conflict["rows"]  # type: ignore[index]
+        locations = ", ".join(
+            f"{item['gt_path']}:{item['line_number']}" for item in rows  # type: ignore[union-attr]
+        )
+        raise MotDataError(
+            "Duplicate identity in frame: "
+            f"{first_conflict['source_split']}:{first_conflict['video_id']}:"  # type: ignore[index]
+            f"{first_conflict['frame']:06d}:{first_conflict['track_id']}; "  # type: ignore[index]
+            f"source rows: {locations}; total conflict keys: {len(duplicate_keys)}"
+        )
     observations: list[Observation] = []
     seen_ids: set[str] = set()
     for key, split in sorted(assignments.items()):
@@ -105,6 +225,9 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
                 continue
             row = parse_mot_row(line, ground_truth, line_number)
             if config.dataset.max_frames_per_video is not None and row.frame > config.dataset.max_frames_per_video:
+                continue
+            raw_identity_key = (source_split, video_id, row.frame, row.track_id)
+            if raw_identity_key in duplicate_keys:
                 continue
             observation = row_to_observation(
                 row,
@@ -149,18 +272,34 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
     split_metadata["manifest_sha256"] = sha256_file(config.manifest_path)
     atomic_write_text(config.resolved_split_path, yaml.safe_dump(split_metadata, sort_keys=False))
     valid = [item for item in observations if item.valid]
+    skip_reasons = count_reasons(
+        reason
+        for item in observations
+        for reason in item.skip_reason.split(";")
+        if reason
+    )
+    excluded_duplicate_rows = int(duplicate_audit["excluded_source_row_count"])
+    skipped_manifest_rows = len(observations) - len(valid)
+    if excluded_duplicate_rows:
+        skip_reasons["duplicate_identity_conflict"] = excluded_duplicate_rows
+        skip_reasons = dict(sorted(skip_reasons.items()))
     atomic_write_json(
         config.manifest_stats_path,
         {
+            "source_observation_count_before_duplicate_filter": duplicate_audit[
+                "selected_source_row_count"
+            ],
             "observation_count": len(observations),
             "valid_observation_count": len(valid),
-            "skipped_observation_count": len(observations) - len(valid),
-            "skip_reasons": count_reasons(
-                reason
-                for item in observations
-                for reason in item.skip_reason.split(";")
-                if reason
-            ),
+            "skipped_manifest_observation_count": skipped_manifest_rows,
+            "skipped_observation_count": skipped_manifest_rows + excluded_duplicate_rows,
+            "duplicate_identity_conflict_key_count": duplicate_audit["conflict_key_count"],
+            "duplicate_identity_excluded_row_count": excluded_duplicate_rows,
+            "duplicate_identity_excluded_row_fraction": duplicate_audit[
+                "excluded_source_row_fraction"
+            ],
+            "duplicate_identity_audit": str(config.duplicate_identity_audit_path),
+            "skip_reasons": skip_reasons,
             "split_counts": {
                 split: sum(item.split == split for item in observations)
                 for split in sorted({item.split for item in observations})
