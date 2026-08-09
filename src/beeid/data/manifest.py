@@ -213,9 +213,22 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
         )
     observations: list[Observation] = []
     seen_ids: set[str] = set()
+    image_directory_fallbacks: list[dict[str, object]] = []
     for key, split in sorted(assignments.items()):
         source_split, video_id = key.split("/", 1)
         sequence = read_seqinfo(root / source_split / video_id, source_split)
+        if sequence.image_directory_fallback_used:
+            image_directory_fallbacks.append(
+                {
+                    "source_split": source_split,
+                    "resolved_split": split,
+                    "video_id": video_id,
+                    "seqinfo_path": str(sequence.directory / "seqinfo.ini"),
+                    "declared_imDir": sequence.declared_image_directory,
+                    "resolved_image_directory": str(sequence.image_directory),
+                    "reason": "declared imDir missing; exactly one canonical directory exists",
+                }
+            )
         ground_truth = sequence.directory / "gt" / "gt.txt"
         if not ground_truth.is_file():
             raise MotDataError(f"Missing ground truth: {ground_truth}")
@@ -299,6 +312,8 @@ def build_manifest(config: ExperimentConfig, *, validate_only: bool = False) -> 
                 "excluded_source_row_fraction"
             ],
             "duplicate_identity_audit": str(config.duplicate_identity_audit_path),
+            "image_directory_fallback_count": len(image_directory_fallbacks),
+            "image_directory_fallbacks": image_directory_fallbacks,
             "skip_reasons": skip_reasons,
             "split_counts": {
                 split: sum(item.split == split for item in observations)

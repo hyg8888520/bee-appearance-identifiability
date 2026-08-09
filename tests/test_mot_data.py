@@ -33,6 +33,44 @@ def test_parse_mot_columns_and_one_based_conversion(tmp_path, config_factory, vi
     assert observation.observation_id == "validation:v1:000001:7"
 
 
+def test_missing_declared_image_directory_uses_unique_canonical_fallback(
+    tmp_path, config_factory, video_factory
+):
+    config = config_factory(tmp_path)
+    video = video_factory(config.paths.bee24_root, "train", "layout-mismatch")
+    seqinfo = video / "seqinfo.ini"
+    seqinfo.write_text(
+        seqinfo.read_text(encoding="utf-8").replace("imDir=img1", "imDir=images"),
+        encoding="utf-8",
+    )
+
+    sequence = read_seqinfo(video, "train")
+    assert sequence.declared_image_directory == "images"
+    assert sequence.image_directory == video / "img1"
+    assert sequence.image_directory_fallback_used
+
+    build_manifest(config)
+    stats = json.loads(config.manifest_stats_path.read_text(encoding="utf-8"))
+    assert stats["image_directory_fallback_count"] == 1
+    assert stats["image_directory_fallbacks"][0]["video_id"] == "layout-mismatch"
+    assert stats["image_directory_fallbacks"][0]["declared_imDir"] == "images"
+
+
+def test_missing_declared_image_directory_rejects_ambiguous_fallback(
+    tmp_path, config_factory, video_factory
+):
+    config = config_factory(tmp_path)
+    video = video_factory(config.paths.bee24_root, "train", "ambiguous-layout")
+    (video / "images").mkdir()
+    seqinfo = video / "seqinfo.ini"
+    seqinfo.write_text(
+        seqinfo.read_text(encoding="utf-8").replace("imDir=img1", "imDir=missing"),
+        encoding="utf-8",
+    )
+    with pytest.raises(MotDataError, match="fallback is ambiguous"):
+        read_seqinfo(video, "train")
+
+
 @pytest.mark.parametrize("line", ["1,2,3", "x,2,1,1,2,2", "1,2,1,1,nan,2", "1.5,2,1,1,2,2"])
 def test_parse_mot_rejects_bad_rows(tmp_path, line):
     with pytest.raises(MotDataError):

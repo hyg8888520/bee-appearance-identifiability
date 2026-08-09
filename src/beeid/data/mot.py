@@ -20,6 +20,8 @@ class SequenceInfo:
     source_split: str
     directory: Path
     image_directory: Path
+    declared_image_directory: str
+    image_directory_fallback_used: bool
     image_extension: str
     frame_rate: int
     sequence_length: int
@@ -118,7 +120,33 @@ def read_seqinfo(video_directory: Path, source_split: str) -> SequenceInfo:
     try:
         parser.read(path, encoding="utf-8")
         section = parser["Sequence"]
-        image_directory = video_directory / section.get("imDir", "img1")
+        declared_image_directory = section.get("imDir", "img1").strip()
+        if not declared_image_directory:
+            raise ValueError("imDir must not be empty")
+        declared_path = Path(declared_image_directory)
+        if declared_path.is_absolute() or ".." in declared_path.parts:
+            raise ValueError(f"imDir must stay within the sequence directory: {declared_image_directory!r}")
+        image_directory = video_directory / declared_path
+        fallback_used = False
+        if not image_directory.is_dir():
+            canonical_candidates = [
+                candidate
+                for name in ("img1", "images")
+                if (candidate := video_directory / name) != image_directory and candidate.is_dir()
+            ]
+            if len(canonical_candidates) == 1:
+                image_directory = canonical_candidates[0]
+                fallback_used = True
+            elif len(canonical_candidates) > 1:
+                choices = ", ".join(str(candidate) for candidate in canonical_candidates)
+                raise ValueError(
+                    f"imDir={declared_image_directory!r} does not exist and fallback is ambiguous: {choices}"
+                )
+            else:
+                raise ValueError(
+                    f"imDir={declared_image_directory!r} does not exist; also checked canonical "
+                    f"directories {video_directory / 'img1'} and {video_directory / 'images'}"
+                )
         extension = section.get("imExt", ".jpg")
         if not extension.startswith("."):
             extension = f".{extension}"
@@ -127,6 +155,8 @@ def read_seqinfo(video_directory: Path, source_split: str) -> SequenceInfo:
             source_split=source_split,
             directory=video_directory,
             image_directory=image_directory,
+            declared_image_directory=declared_image_directory,
+            image_directory_fallback_used=fallback_used,
             image_extension=extension,
             frame_rate=section.getint("frameRate", fallback=0),
             sequence_length=section.getint("seqLength"),
@@ -137,8 +167,6 @@ def read_seqinfo(video_directory: Path, source_split: str) -> SequenceInfo:
         raise MotDataError(f"Invalid seqinfo.ini {path}: {error}") from error
     if values.sequence_length <= 0 or values.image_width <= 0 or values.image_height <= 0:
         raise MotDataError(f"Non-positive dimensions or sequence length in {path}")
-    if not values.image_directory.is_dir():
-        raise MotDataError(f"Missing image directory: {values.image_directory}")
     return values
 
 
