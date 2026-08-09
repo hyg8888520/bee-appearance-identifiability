@@ -42,6 +42,30 @@ def _infer_num_classes(state: Mapping[str, Any]) -> int:
     return int(matches[0][1].shape[0])
 
 
+def _checkpoint_backbone_profile(state: Mapping[str, Any]) -> str:
+    """Identify only the two explicitly supported TOPIC BEE AGW backbones."""
+    keys = set(state)
+    r50_markers = {
+        "backbone.conv1.weight",
+        "backbone.layer1.0.conv2.weight",
+        "backbone.NL_2.0.theta.weight",
+        "backbone.NL_3.0.theta.weight",
+    }
+    s50_markers = {
+        "backbone.conv1.0.weight",
+        "backbone.layer1.0.conv2.conv.weight",
+    }
+    is_r50_nonlocal = r50_markers <= keys and not (s50_markers & keys)
+    is_resnest50 = s50_markers <= keys and not (r50_markers & keys)
+    if is_r50_nonlocal:
+        return "official_bee_checkpoint_resnet50_nonlocal"
+    if is_resnest50:
+        return "agw_s50_resnest50"
+    raise TopicCompatibilityError(
+        f"{BLOCKED_TOPIC_AGW_COMPATIBILITY}: checkpoint backbone signature is unknown or ambiguous"
+    )
+
+
 def strict_state_report(model: Any, state: Mapping[str, Any]) -> dict[str, list[str]]:
     expected = model.state_dict()
     missing = sorted(set(expected) - set(state))
@@ -92,6 +116,10 @@ class TopicAGWExtractor(FeatureExtractor):
         self.input_size = input_size
         state = dict(state_override) if state_override is not None else _checkpoint_state(torch, checkpoint)
         classes = _infer_num_classes(state)
+        self.backbone_profile = (
+            _checkpoint_backbone_profile(state) if model is None else "injected_contract_test_model"
+        )
+        self.config_overrides: dict[str, Any] = {}
         if model is None:
             fast_reid = repo / "fast-reid"
             config_path = repo / config_relative
@@ -112,6 +140,11 @@ class TopicAGWExtractor(FeatureExtractor):
                 cfg.MODEL.BACKBONE.PRETRAIN = False
                 cfg.MODEL.HEADS.NUM_CLASSES = classes
                 cfg.INPUT.SIZE_TEST = [input_size, input_size]
+                if self.backbone_profile == "official_bee_checkpoint_resnet50_nonlocal":
+                    # The published checkpoint has Base-AGW's ResNet50 + non-local
+                    # signature even though the adjacent BEE config selects ResNeSt.
+                    cfg.MODEL.BACKBONE.NAME = "build_resnet_backbone"
+                    self.config_overrides["MODEL.BACKBONE.NAME"] = "build_resnet_backbone"
                 cfg.freeze()
                 model = build_model(cfg)
             except Exception as error:
@@ -149,9 +182,17 @@ class TopicAGWExtractor(FeatureExtractor):
 
     @property
     def details(self) -> dict[str, Any]:
+        if self.backbone_profile == "official_bee_checkpoint_resnet50_nonlocal":
+            architecture = "TOPICTrack published BEE AGW ResNet-50 + Non-local + GeM + BN neck"
+        elif self.backbone_profile == "agw_s50_resnest50":
+            architecture = "TOPICTrack BEE AGW ResNeSt-50 + GeM + BN neck"
+        else:
+            architecture = "injected AGW contract-test model"
         return {
-            "architecture": "TOPICTrack BEE AGW ResNeSt-50 + GeM + BN neck",
+            "architecture": architecture,
+            "checkpoint_backbone_profile": self.backbone_profile,
             "config": "fast-reid/configs/bee/AGW_S50.yml",
+            "compatibility_overrides": self.config_overrides,
             "input_size_override": self.input_size,
             "official_size_test": [384, 384],
             "checkpoint_loading": "precompare all keys/shapes then strict=True",

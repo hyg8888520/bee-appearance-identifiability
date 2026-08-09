@@ -107,6 +107,29 @@ def test_topic_wrapper_strict_state_contract(tmp_path):
         )
 
 
+def test_topic_checkpoint_backbone_profile_is_signature_gated():
+    from beeid.models.topic_agw import _checkpoint_backbone_profile, TopicCompatibilityError
+
+    r50_nonlocal = {
+        "backbone.conv1.weight": object(),
+        "backbone.layer1.0.conv2.weight": object(),
+        "backbone.NL_2.0.theta.weight": object(),
+        "backbone.NL_3.0.theta.weight": object(),
+    }
+    assert _checkpoint_backbone_profile(r50_nonlocal) == "official_bee_checkpoint_resnet50_nonlocal"
+
+    resnest50 = {
+        "backbone.conv1.0.weight": object(),
+        "backbone.layer1.0.conv2.conv.weight": object(),
+    }
+    assert _checkpoint_backbone_profile(resnest50) == "agw_s50_resnest50"
+
+    with pytest.raises(TopicCompatibilityError, match="unknown or ambiguous"):
+        _checkpoint_backbone_profile({**r50_nonlocal, **resnest50})
+    with pytest.raises(TopicCompatibilityError, match="unknown or ambiguous"):
+        _checkpoint_backbone_profile({"heads.weight": object()})
+
+
 def test_resnet50_cpu_architecture_single_batch():
     torch = pytest.importorskip("torch")
     torchvision = pytest.importorskip("torchvision")

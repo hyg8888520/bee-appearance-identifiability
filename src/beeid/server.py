@@ -179,6 +179,7 @@ def gpu_smoke(config: ExperimentConfig) -> dict[str, Any]:
             "status": "passed",
             "embedding_shape": list(topic.encode([crop]).shape),
             "strict_load_report": topic.load_report,
+            "extractor_details": topic.details,
             "amp": config.runtime.amp,
         }
     except TopicCompatibilityError as error:
