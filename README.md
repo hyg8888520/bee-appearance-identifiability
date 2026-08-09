@@ -1,10 +1,10 @@
-# BEE24 H1 Appearance, H2 Reliability, H2.5 Memory Diagnostics, and Frozen H3 Protocol
+# BEE24 H1 Appearance, H2/H2.5 Diagnostics, and H3 Reliability-Aware Tracking
 
 ## H2.5 refined memory-contamination 与 H3 冻结协议
 
 H2.5 不再使用已被 H2 结果否定的“静态小框或静态低 Laplacian 即低质量”规则。它只在已冻结的 development validation 上，按结果盲的经验百分位选择五类动态风险：身份历史离群、尺度突变、方向代理突变、清晰度变化和拥挤/重叠。对每个事件，代码注入同帧空间最近的不同身份特征，并在完全相同的后续目标上比较四种策略：oracle 正确更新、无条件更新、跳过更新和可靠性加权更新。该实验是 GT 轨迹上的机制测试，不是 MOT 结果。
 
-H3 当前只冻结实验协议，不假装已经实现或运行完整 RAM-Bee tracker。协议锁固定数据隔离、可靠性特征、project-train 阈值拟合、GT/fixed-detector 两阶段、四组消融、最终指标和一次性 final-test 门禁。详见 [H2.5 protocol](docs/h25_protocol.md)、[H3 frozen protocol](docs/h3_frozen_protocol.md) 和 [server deployment](docs/h25_server_deployment.md)。
+H3 已实现冻结协议中的第一阶段 `gt_detection_boxes`：project-train-only 可靠性校准、因果在线关联、四组消融、GT-box identity metrics、视频聚类 bootstrap 和 final-test 门禁。`fixed_detector_boxes` 仍为 `SERVER_VALIDATION_PENDING`，在 GT-box development 通过前不会读取 final test。详见 [H2.5 protocol](docs/h25_protocol.md)、[H3 frozen protocol](docs/h3_frozen_protocol.md)、[H3 implementation](docs/h3_implementation.md) 和 [H3 server deployment](docs/h3_server_deployment.md)。
 
 服务器上先从已完成的 H2 目录复用特征，无需再次提取：
 
@@ -28,6 +28,8 @@ H2.5 输出包括 `h25_events.csv`、`h25_strategy_trajectories.csv`、`h25_stra
 
 > 当前状态：首次完整 H1 已在 RTX 4090、完整 BEE24 和真实 checkpoint 上运行并完成结果审计，固定结论见 [h1_findings.md](docs/h1_findings.md)。H2 源码、CPU 单元测试和 test-only synthetic smoke 可在本地验证；真实 H2 多干预特征、可靠性统计和模板污染结果仍为 `SERVER_VALIDATION_PENDING`。两阶段都只使用 development validation，最终 test 继续锁定。
 
+H3 源码的 CPU 单元测试与 test-only synthetic smoke 可在本地验证；真实 project-train 特征提取、阈值拟合、GT-box development 和 fixed-detector development 在代码提交时统一标记 `SERVER_VALIDATION_PENDING`。synthetic encoder 只测试程序契约，绝不进入真实模型选项或实验结果。
+
 ## 许可与使用边界
 
 本项目原创代码**未明确授予任何许可**，仓库没有顶层 `LICENSE`。查看或取得源码不等于获得复制、修改或再分发许可。各上游项目仍受其各自许可证约束，详见 [reference_audit.md](docs/reference_audit.md) 与 [references.lock.yaml](references.lock.yaml)。BEE24 官方页面未说明数据许可证，本项目将其标记为 `LICENSE_NOT_STATED_BY_SOURCE`，仅处理使用者合法取得的数据，绝不提交或再分发。
@@ -49,6 +51,19 @@ H2 不重新划分数据，也不覆盖 H1。它从已完成的 H1 manifest 读�
 
 统计同时报告样本量、Rank-1、margin、逐视频结果，以及 video/identity 聚类 bootstrap；不会把相邻帧当成独立样本。受控模板实验在 GT 轨迹上向普通 EMA 注入低质量 observation、模糊特征或同帧错误身份，测量相似度损失、诱发错误和恢复步数。详细、预先固定的定义见 [h2_protocol.md](docs/h2_protocol.md)。这一步只诊断机制，不提前实现 RAM-Bee，也不等价于完整 MOT。
 
+## H3：可靠性感知关联
+
+H3 不复用 development Q75 作为方法参数。代码从冻结 H1 manifest 选择 25 个 `project_train` 视频和 6 个 `development_validation` 视频，对两部分生成统一 crop embedding 与 outcome-blind signals；所有 CDF/阈值只在 `project_train` 拟合，并将 manifest、协议、split、signal 和 cache 指纹写入 `h3_thresholds.json`。
+
+四组冻结变体是：
+
+- `baseline_association`：外观与常速度运动关联，无条件 EMA；
+- `selective_memory_update`：相同关联，低可靠 observation 跳过记忆更新；
+- `reliability_weighted_association`：可靠性降低 appearance association 权重，记忆仍无条件更新；
+- `full_ram_bee`：可靠性感知关联加 hard gate 和 weighted EMA。
+
+GT-box 阶段直接知道每个 tracker detection 对应哪一个 GT detection，因此 DetA=1、Frag=0 是阶段设计的结果；这里的 HOTA 只反映 association。IDF1、AssA、HOTA 与 IDSW 的语义对照 pinned TrackEval `12c8791b`，但不把 GT-box 结果冒充固定 detector 或完整检测跟踪结果。
+
 ## 服务器首次部署
 
 以下命令均在 Linux 服务器执行，不需要安装 Codex。建议目录仅作示例，业务代码不会硬编码它们。
@@ -67,6 +82,8 @@ cp configs/h1.local.yaml.example configs/h1.local.yaml
 cp configs/h1_smoke.example.yaml configs/h1_smoke.local.yaml
 cp configs/h2.local.yaml.example configs/h2.local.yaml
 cp configs/h2_smoke.example.yaml configs/h2_smoke.local.yaml
+cp configs/h3.local.yaml.example configs/h3.local.yaml
+cp configs/h3_smoke.example.yaml configs/h3_smoke.local.yaml
 # 按所运行阶段编辑 *.local.yaml 中的全部路径；这些文件已被 Git 忽略。
 ```
 
@@ -124,6 +141,17 @@ beeid h2-contamination --config configs/h2.local.yaml --models resnet50 dinov3 t
 beeid h2-report --config configs/h2.local.yaml --models resnet50 dinov3 topic_agw
 beeid h2-estimate --config configs/h2.local.yaml --model dinov3 --embedding-dimension 384 --observations-per-second 100
 beeid h2-synthetic-smoke
+
+# H3 uses H1's frozen manifest but writes independent train/dev caches and outputs.
+beeid h3-validate-protocol --protocol configs/h3_protocol.lock.yaml --checksum configs/h3_protocol.lock.sha256
+beeid h3-validate --config configs/h3.local.yaml
+beeid h3-signals --config configs/h3.local.yaml
+beeid h3-extract --config configs/h3.local.yaml --model resnet50
+beeid h3-extract --config configs/h3.local.yaml --model dinov3
+beeid h3-fit-thresholds --config configs/h3.local.yaml --models resnet50 dinov3
+beeid h3-track --config configs/h3.local.yaml --models resnet50 dinov3
+beeid h3-report --config configs/h3.local.yaml --models resnet50 dinov3
+beeid h3-synthetic-smoke
 ```
 
 真实 `extract --model` 只有三个选项，不包含 synthetic 测试编码器。DINOv3 仅通过 pinned 本地 Hub 的 `dinov3_vits16` 和官方 `forward_features()` 运行，默认使用 `x_norm_patchtokens` mean pooling；没有 timm、DINOv2、Hugging Face 或随机权重 fallback。
@@ -139,6 +167,8 @@ beeid h2-synthetic-smoke
 
 H2 另写出 `h2_summary.csv`、observation/query diagnostics、context/paired ablation、clustered and paired bootstrap、factor/predictiveness、memory contamination、`h2_run_metadata.json`、`h2_logs/` 与 `h2_figures/`。完整清单见 [h2_protocol.md](docs/h2_protocol.md)。
 
+H3 写出 `h3_observation_signals.csv`、`h3_thresholds.json`、`h3_assignments.csv`、`h3_per_video_metrics.csv`、`h3_summary.csv`、`h3_paired_video_metrics.csv`、`h3_video_cluster_bootstrap.csv`、MOTChallenge tracker text、metadata、resolved config 和日志。特征 cache 在 `<cache_root>/features/h3__<model>/<fingerprint>/`。
+
 不要把这些目录指回仓库。`configs/*.local.yaml`、权重、`.npz` cache、数据和常见输出目录均被 `.gitignore` 排除。
 
 ## 本地 CPU 验证
@@ -152,10 +182,12 @@ python -m venv .venv
 .venv/bin/python -m pytest -q
 .venv/bin/beeid synthetic-smoke
 .venv/bin/beeid h2-synthetic-smoke
+.venv/bin/beeid h25-synthetic-smoke
+.venv/bin/beeid h3-synthetic-smoke
 ```
 
 Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。CPU CI 也只证明单元测试与 synthetic smoke，不声称覆盖 GPU。
 
 ## 解释限制
 
-GT-box 实验只衡量 appearance upper bound，不是 detector/tracker 的端到端结果。背景可能泄漏视频、位置或场景信息；扩框会改变背景占比并可能偏向某些模型；Laplacian、方向和 GT-box IoU 只是清晰度、姿态和遮挡代理；development validation 来自 train 视频而非官方 validation。H1/H2 都不能直接证明实际跟踪的 ID Switch 会减少，受控 EMA 污染也不能代替固定检测结果下的端到端 MOT 验证。
+GT-box H1 只衡量 appearance upper bound；H3 GT-box 虽然产生在线关联轨迹，仍没有 detector FP/FN，不能当成完整 MOT。背景可能泄漏视频、位置或场景信息；扩框会改变背景占比并可能偏向某些模型；Laplacian、方向和 GT-box IoU 只是清晰度、姿态和遮挡代理；development validation 来自 train 视频而非官方 validation。只有 fixed-detector development 方向稳定、全部 freeze gate 完成后，才允许一次 final-test evaluation。

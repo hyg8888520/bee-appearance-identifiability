@@ -19,7 +19,7 @@ H3 的机器可读冻结文件是 [`configs/h3_protocol.lock.yaml`](../configs/h
 
 只有 method code、config、checkpoint、threshold artifact 和 reporting code 全部冻结，且 development 结果已签字确认后，才允许一次 final-test 运行。任何提前读取、未来信息泄漏、split/identity 泄漏或把官方 AGW 声称为 split-clean，都触发 STOP。
 
-当前实现交付的是 H3 协议验证器和冻结门禁，不是完整 tracker。H2.5 paired benefit 只是进入 H3 的 GO 证据之一；真正的论文主张必须由 H3 的 GT-box 与 fixed-detector tracking 指标支持。
+当前实现已交付 H3 协议验证器、冻结门禁和第一阶段 GT-box online tracker。GT-box 阶段包含 project-train 阈值拟合、四种关联/记忆变体和 identity metrics，但 fixed-detector adapter、真实服务器结果与 final test 仍未完成。H2.5 paired benefit 只是进入 H3 的 GO 证据之一；真正的论文主张仍必须由 GT-box 与 fixed-detector development 共同支持。
 
 验证命令：
 
@@ -28,3 +28,5 @@ H3 的机器可读冻结文件是 [`configs/h3_protocol.lock.yaml`](../configs/h
   --protocol configs/h3_protocol.lock.yaml \
   --checksum configs/h3_protocol.lock.sha256
 ```
+
+实现和服务器运行分别见 [h3_implementation.md](h3_implementation.md) 与 [h3_server_deployment.md](h3_server_deployment.md)。
