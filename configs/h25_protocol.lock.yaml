@@ -1,0 +1,63 @@
+schema_version: 1
+protocol_id: bee24-h25-refined-memory-contamination-v1
+status: FROZEN
+role: development_diagnostic
+source:
+  split: development_validation
+  primary_variant: context_e020_raw_i224
+  reuse_completed_h2_cache: true
+  final_test_access: false
+event_selection:
+  outcome_blind: true
+  trusted_history_length: 5
+  history_length: 5
+  event_quantile: 0.75
+  maximum_events_per_identity_and_type: 1
+  require_future_observations: true
+  require_same_frame_negative: true
+  contaminant: nearest_center_different_identity_same_frame
+  event_types:
+    - history_outlier
+    - bbox_scale_change
+    - orientation_change_proxy
+    - sharpness_change
+    - crowding
+    - wrong_identity_control
+  signals:
+    history_outlier: model_specific_previous_history_cosine_outlier
+    bbox_scale_change: absolute_log_bbox_area_ratio_to_previous_observation
+    orientation_change_proxy: axial_absolute_bbox_orientation_change_to_previous_observation
+    sharpness_change: absolute_log_bbox_laplacian_ratio_to_previous_observation
+    crowding: max_percentile_of_neighbor_count_wide_and_max_bbox_iou
+  excluded_static_signals:
+    - bbox_area
+    - bbox_laplacian_variance
+  percentile_reference: selected_development_observations_without_outcomes
+  combination: max_percentile
+reliability:
+  formula: clip(1_minus_event_risk_percentile, min_weight, 1)
+  min_weight: 0.05
+memory:
+  strategies:
+    - oracle_correct_update
+    - unconditional_update
+    - skip_update
+    - reliability_weighted_update
+  ema_alpha: 0.2
+  recovery_horizon: 10
+  recovery_tolerance: 0.01
+reporting:
+  windows:
+    immediate: [1, 1]
+    short: [1, 3]
+    horizon: [1, 10]
+  bootstrap_replicates: 1000
+  bootstrap_seed: 24
+  cluster_units: [video_id, identity]
+  primary_comparisons:
+    - reliability_weighted_update_minus_unconditional_update
+    - skip_update_minus_unconditional_update
+scope:
+  controlled_gt_tracks_only: true
+  tracker_output_claim: false
+  interpretation: mechanism_test_not_end_to_end_tracking

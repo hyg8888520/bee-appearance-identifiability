@@ -1,0 +1,34 @@
+# Real-data H2.5 smoke. The H2 source must have been produced with the same subset controls.
+paths:
+  bee24_root: /path/to/datasets/BEE24
+  h1_output_root: /path/to/experiments/beeid/h1
+  h2_output_root: /path/to/experiments/beeid/h2-smoke
+  output_root: /path/to/experiments/beeid/h25-smoke
+  cache_root: /path/to/experiments/beeid/cache-h2-smoke
+  dinov3_repo: /path/to/third_party/dinov3
+  dinov3_weights: /path/to/checkpoints/dinov3/dinov3_vits16.pth
+  topictrack_repo: /path/to/third_party/TOPICTrack
+  topic_agw_weights: /path/to/checkpoints/topictrack/bee_agw_s50.pth
+  dino_python: /path/to/venvs/beeid-dino/bin/python
+  topic_python: /path/to/venvs/beeid-topic/bin/python
+runtime: {device: 'cuda:0', batch_size: 16, num_workers: 4, amp: true, amp_dtype: float16, seed: 24, cache_shard_size: 256}
+dataset: {source_splits: [train], bbox_origin: one, invalid_bbox_policy: skip, duplicate_identity_policy: exclude_conflict, missing_seqinfo_policy: infer_from_images, confidence_min: 0.0, validation_fraction: 0.2, max_videos: null, max_frames_per_video: 75, video_ids: [BEE24-03], deep_validate_images: false}
+protocol: {deltas: [1, 5, 10, 25], crop_expansion: 0.2, input_size: 224, hard_negative_k: 5, evaluation_split: validation, failure_top_k: 10}
+models: {resnet_weights: IMAGENET1K_V2, dinov3_hub_model: dinov3_vits16, dinov3_feature_source: patch_mean, topic_config_relative: fast-reid/configs/bee/AGW_S50.yml}
+h2:
+  project_split: splits/project_split.yaml
+  allow_subset: true
+  primary_variant: context_e020_raw_i224
+  patch_size: 16
+  density_radius_multipliers: [1.0, 2.0]
+  history_length: 5
+  factor_bins: 4
+  bootstrap_replicates: 100
+  manual_annotations_csv: null
+  variants:
+    - {name: context_e020_raw_i224, crop_expansion: 0.2, input_size: 224, pixel_view: raw, blur_radius: 0.0}
+  contamination: {trusted_history_length: 5, ema_alpha: 0.2, recovery_horizon: 10, recovery_tolerance: 0.01, low_quality_quantile: 0.25}
+h25:
+  protocol_lock: h25_protocol.lock.yaml
+  h3_protocol_lock: h3_protocol.lock.yaml
+  allow_subset: true

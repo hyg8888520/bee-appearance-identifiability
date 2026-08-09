@@ -1,0 +1,2 @@
+# Local/server secrets and paths belong in configs/h25.local.yaml (gitignored).
+# Start from h25.example.yaml for full development or h25_smoke.example.yaml for one-video smoke.

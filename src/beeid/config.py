@@ -26,6 +26,7 @@ class PathsConfig:
     topictrack_repo: Path
     topic_agw_weights: Path
     h1_output_root: Path | None = None
+    h2_output_root: Path | None = None
     dino_python: Path | None = None
     topic_python: Path | None = None
 
@@ -108,6 +109,13 @@ class H2Config:
 
 
 @dataclass(frozen=True)
+class H25Config:
+    protocol_lock_path: Path
+    h3_protocol_lock_path: Path
+    allow_subset: bool
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -116,6 +124,7 @@ class ExperimentConfig:
     protocol: ProtocolConfig
     models: ModelConfig
     h2: H2Config | None
+    h25: H25Config | None
 
     @property
     def manifest_path(self) -> Path:
@@ -158,6 +167,12 @@ class ExperimentConfig:
     @property
     def h2_cache_locations_path(self) -> Path:
         return self.paths.output_root / "h2_cache_locations.json"
+
+    @property
+    def h25_source_root(self) -> Path:
+        if self.paths.h2_output_root is None:
+            raise ConfigurationError("paths.h2_output_root is required by H2.5 commands")
+        return self.paths.h2_output_root
 
     def serializable(self) -> dict[str, Any]:
         def convert(value: Any) -> Any:
@@ -275,13 +290,14 @@ def load_config(path: str | Path) -> ExperimentConfig:
     except yaml.YAMLError as error:
         raise ConfigurationError(f"Invalid YAML in {config_path}: {error}") from error
     root = _mapping(raw, "config")
-    _keys(root, {"paths", "runtime", "dataset", "protocol", "models", "h2"}, "config")
+    _keys(root, {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25"}, "config")
     base = config_path.parent
 
     p = _mapping(_require(root, "paths", "config"), "paths")
     path_keys = {
         "bee24_root", "output_root", "cache_root", "dinov3_repo", "dinov3_weights",
-        "topictrack_repo", "topic_agw_weights", "h1_output_root", "dino_python", "topic_python",
+        "topictrack_repo", "topic_agw_weights", "h1_output_root", "h2_output_root",
+        "dino_python", "topic_python",
     }
     _keys(p, path_keys, "paths")
     paths = PathsConfig(
@@ -293,6 +309,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         topictrack_repo=_path(_require(p, "topictrack_repo", "paths"), base, "paths.topictrack_repo"),  # type: ignore[arg-type]
         topic_agw_weights=_path(_require(p, "topic_agw_weights", "paths"), base, "paths.topic_agw_weights"),  # type: ignore[arg-type]
         h1_output_root=_path(p.get("h1_output_root"), base, "paths.h1_output_root", optional=True),
+        h2_output_root=_path(p.get("h2_output_root"), base, "paths.h2_output_root", optional=True),
         dino_python=_path(
             p.get("dino_python"), base, "paths.dino_python", optional=True, preserve_symlink=True
         ),
@@ -565,4 +582,33 @@ def load_config(path: str | Path) -> ExperimentConfig:
             contamination=contamination,
         )
 
-    return ExperimentConfig(config_path, paths, runtime, dataset, protocol, models, h2)
+    h25: H25Config | None = None
+    if "h25" in root and root["h25"] is not None:
+        value = _mapping(root["h25"], "h25")
+        _keys(value, {"protocol_lock", "h3_protocol_lock", "allow_subset"}, "h25")
+        if h2 is None:
+            raise ConfigurationError("h25 requires the h2 section that defines the reused primary variant")
+        if paths.h2_output_root is None:
+            raise ConfigurationError("paths.h2_output_root is required when h25 is configured")
+        roots = {
+            paths.output_root.resolve(strict=False),
+            paths.h1_output_root.resolve(strict=False) if paths.h1_output_root else None,
+            paths.h2_output_root.resolve(strict=False),
+        }
+        if len(roots) != 3:
+            raise ConfigurationError("H2.5 output_root must differ from H1 and H2 source roots")
+        if protocol.evaluation_split != "validation" or dataset.source_splits != ("train",):
+            raise ConfigurationError(
+                "H2.5 is restricted to the frozen train-derived development validation split"
+            )
+        h25 = H25Config(
+            protocol_lock_path=_path(
+                _require(value, "protocol_lock", "h25"), base, "h25.protocol_lock"
+            ),  # type: ignore[arg-type]
+            h3_protocol_lock_path=_path(
+                _require(value, "h3_protocol_lock", "h25"), base, "h25.h3_protocol_lock"
+            ),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h25"), "h25.allow_subset"),
+        )
+
+    return ExperimentConfig(config_path, paths, runtime, dataset, protocol, models, h2, h25)

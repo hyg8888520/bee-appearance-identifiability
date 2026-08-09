@@ -1,4 +1,4 @@
-"""Composable command-line interface for the BEE24 H1/H2 benchmarks."""
+"""Composable command-line interface for the BEE24 H1/H2/H2.5 benchmarks."""
 
 from __future__ import annotations
 
@@ -30,6 +30,11 @@ from .h2.orchestration import orchestrate_h2
 from .h2.report import generate_h2_report
 from .h2.signals import build_observation_signals
 from .h2.synthetic import h2_synthetic_smoke
+from .h25.core import validate_h25_inputs
+from .h25.experiment import run_h25_experiment
+from .h25.report import generate_h25_report
+from .h25.synthetic import h25_synthetic_smoke
+from .h3.protocol import validate_h3_protocol
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -90,6 +95,24 @@ def _parser() -> argparse.ArgumentParser:
         "h2-synthetic-smoke", help="Run end-to-end H2 smoke with a test-only encoder"
     )
     h2_synthetic.add_argument("--output", type=Path)
+
+    configured("h25-validate", "Validate completed H2 inputs and both frozen protocol locks")
+    h25_run = configured("h25-run", "Run refined outcome-blind four-strategy contamination diagnostics")
+    h25_run.add_argument("--models", nargs="+", choices=REAL_MODEL_NAMES, required=True)
+    h25_report = configured("h25-report", "Generate H2.5 paired figures, provenance, and claim boundaries")
+    h25_report.add_argument("--models", nargs="+", choices=REAL_MODEL_NAMES, required=True)
+    h25_all = configured("h25-run-all", "Validate, run, and report H2.5 in one environment")
+    h25_all.add_argument("--models", nargs="+", choices=REAL_MODEL_NAMES, default=list(REAL_MODEL_NAMES))
+    h25_all.add_argument("--confirm-full", action="store_true")
+    h25_synthetic = subparsers.add_parser(
+        "h25-synthetic-smoke", help="Run end-to-end H2.5 smoke with a test-only encoder"
+    )
+    h25_synthetic.add_argument("--output", type=Path)
+    h3_validate = subparsers.add_parser(
+        "h3-validate-protocol", help="Validate the frozen H3 protocol and checksum"
+    )
+    h3_validate.add_argument("--protocol", type=Path, required=True)
+    h3_validate.add_argument("--checksum", type=Path)
     return parser
 
 
@@ -160,6 +183,26 @@ def _run_h2_all(config: object, models: list[str], confirm_full: bool) -> dict[s
     return {"completed_models": completed, "blocked_models": blocked}
 
 
+def _run_h25_all(config: object, models: list[str], confirm_full: bool) -> dict[str, object]:
+    h25 = config.h25  # type: ignore[attr-defined]
+    if h25 is None:
+        raise RuntimeError("H2.5 commands require an h25 config section")
+    if not h25.allow_subset and not confirm_full:
+        raise RuntimeError(
+            "Full H2.5 is gated; pass --confirm-full only after synthetic and real-data smoke"
+        )
+    validate_h25_inputs(config)  # type: ignore[arg-type]
+    experiment = run_h25_experiment(config, models)  # type: ignore[arg-type]
+    metadata = generate_h25_report(config, models)  # type: ignore[arg-type]
+    return {
+        "status": "completed",
+        "models": models,
+        "event_count": experiment["event_count"],
+        "metadata_status": metadata["status"],
+        "final_test_read": False,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
@@ -167,6 +210,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = synthetic_smoke(arguments.output)
         elif arguments.command == "h2-synthetic-smoke":
             result = h2_synthetic_smoke(arguments.output)
+        elif arguments.command == "h25-synthetic-smoke":
+            result = h25_synthetic_smoke(arguments.output)
+        elif arguments.command == "h3-validate-protocol":
+            result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -230,6 +277,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif arguments.command == "h2-orchestrate":
                 orchestrate_h2(config, confirm_full=arguments.confirm_full)
                 result = {"status": "completed"}
+            elif arguments.command == "h25-validate":
+                _, _, result = validate_h25_inputs(config)
+            elif arguments.command == "h25-run":
+                result = run_h25_experiment(config, arguments.models)
+            elif arguments.command == "h25-report":
+                result = generate_h25_report(config, arguments.models)
+            elif arguments.command == "h25-run-all":
+                result = _run_h25_all(
+                    config, arguments.models, arguments.confirm_full
+                )
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

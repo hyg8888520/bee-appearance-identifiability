@@ -49,3 +49,9 @@ The frozen first-run evidence and permitted conclusions are recorded in [`h1_fin
 ## H2 handoff
 
 H2 consumes the completed H1 manifest and caches without changing the frozen retrieval contract. It is restricted to development validation and diagnoses observation-quality/context/history signals plus controlled EMA memory contamination. It does not implement a tracker or read final test. The pre-registered interventions, proxy boundaries, clustered statistics, and artifact contract are defined in [`h2_protocol.md`](h2_protocol.md).
+
+## H2.5 and H3 handoff
+
+H2.5 replaces the unsuccessful static-low-quality contamination rule with outcome-blind dynamic event selection and exactly paired oracle, unconditional, skip, and reliability-weighted updates. It reuses completed H2 primary caches, remains on development validation, and reports both video- and identity-cluster bootstrap intervals. Its frozen definitions and claim limits are in [`h25_protocol.md`](h25_protocol.md).
+
+H3 is locked before tracker implementation in [`h3_frozen_protocol.md`](h3_frozen_protocol.md). Deployable reliability thresholds must be fit on project train; development is reserved for selection and ablation; final test remains unread until method, checkpoints, thresholds, configuration, and reporting code are frozen.
