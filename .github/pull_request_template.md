@@ -5,6 +5,15 @@
 - [ ] Real BEE24 H2.5 smoke/full run remains `SERVER_VALIDATION_PENDING`
 - [ ] H3 tracker implementation is explicitly out of scope; final test remains unread
 
+## H4 deferred-identity checklist
+
+- [ ] H4 and inherited H3 protocol checksums validated
+- [ ] Test-only crossing fixture reaches recoverability gate and branch-isolation tracker
+- [ ] Real H3 feature caches are reused read-only; no feature re-extraction claimed
+- [ ] Full development recoverability gate is reported before method metrics
+- [ ] Oracle GT tables and causal tracker tables remain separate
+- [ ] Final test remains unread; fixed detector stage is `SERVER_VALIDATION_PENDING`
+
 ## Scope
 
 Implements BEE24 H1 GT-crop appearance identifiability and H2 observation-reliability/template-contamination diagnostics without committing data, weights, caches, outputs or local YAML.

@@ -98,5 +98,7 @@ def test_cli_help_lists_composable_commands():
         "h25-synthetic-smoke", "h3-validate-protocol", "h3-validate", "h3-extract",
         "h3-signals", "h3-fit-thresholds", "h3-track", "h3-report", "h3-run-all",
         "h3-synthetic-smoke",
+        "h4-validate-protocol", "h4-validate", "h4-audit", "h4-track",
+        "h4-report", "h4-run-all", "h4-synthetic-smoke",
     ):
         assert command in result.stdout

@@ -1,0 +1,100 @@
+schema_version: 1
+protocol_id: bee24-h4-deferred-identity-frozen-development-v1
+status: FROZEN_DEVELOPMENT
+identity_definition: [video_id, track_id]
+isolation_unit: video_id
+
+project_split:
+  path: configs/splits/project_split.yaml
+  partitions: [project_train, development_validation, final_test]
+  evaluation_partition: development_validation
+  final_test_access: false
+  final_test_excluded_from_fitting: true
+  final_test_excluded_from_selection: true
+
+source_h3:
+  protocol_path: configs/h3_protocol.lock.yaml
+  protocol_checksum_path: configs/h3_protocol.lock.sha256
+  required_status: completed_development_gt_boxes
+  required_artifacts:
+    - h3_run_metadata.json
+    - h3_tracking_metadata.json
+    - h3_observation_signals.csv
+    - h3_thresholds.json
+    - h3_cache_locations.json
+  reuse_policy: read_only_no_feature_reextraction
+
+model_policy:
+  primary_backbones: [resnet50, dinov3]
+  official_topic_agw: REFERENCE_ONLY_NOT_A_METHOD_COMPONENT
+  trainable_parameters: 0
+
+recoverability_audit:
+  horizons: [1, 3, 5, 10]
+  go_horizon: 10
+  history_length: 5
+  unique_margin: 0.0
+  ground_truth_use: OFFLINE_ORACLE_DIAGNOSTIC_ONLY
+  method_input_use: FORBIDDEN
+  report_separately_from_tracker_metrics: true
+
+hypothesis_tracker:
+  event_trigger: local_assignment_ambiguity
+  primary_horizon: 5
+  beam_width: 6
+  max_component_size: 4
+  ambiguity_margin: 0.03
+  memory_alpha: 0.2
+  appearance_weight: 0.7
+  motion_weight: 0.3
+  max_normalized_distance: 4.0
+  min_assignment_score: 0.1
+  unmatched_penalty: 0.25
+  max_age: 25
+  branch_memory_policy: copy_on_branch_commit_winner_only
+  causality: fixed_lag_uses_no_frames_after_decision_frame
+
+association_variants:
+  - immediate_commit
+  - fixed_lag_frozen_memory_h5
+  - fixed_lag_isolated_memory_h1
+  - fixed_lag_isolated_memory_h3
+  - fixed_lag_isolated_memory_h5
+  - fixed_lag_isolated_memory_h10
+primary_variant: fixed_lag_isolated_memory_h5
+
+metrics:
+  primary: [AssA, IDF1, IDSW, HOTA]
+  latency: [decision_latency_frames, deferred_observation_fraction]
+  efficiency: [event_count, hypotheses_expanded, oversized_conflict_count]
+  uncertainty: video_cluster_bootstrap
+
+stop_go:
+  recoverability_gate:
+    min_joint_recoverable_fraction: 0.30
+    min_events_per_model: 10
+    min_videos_with_events: 3
+    failure_action: STOP_BEFORE_METHOD_EVALUATION
+  method_gate:
+    noninferiority_tolerance: 0.002
+    min_nonharmed_videos: 4
+    require_positive_idsw_reduction_each_primary_backbone: true
+    require_idf1_and_hota_noninferiority_each_primary_backbone: true
+
+final_test:
+  access: false
+  runs_allowed_in_h4_development: 0
+  next_protocol_required: true
+
+claims:
+  allowed:
+    - future_evidence_recoverability_on_development_if_oracle_gate_passes
+    - causal_fixed_lag_association_results_on_gt_boxes
+    - branch_memory_isolation_ablation_on_frozen_backbones
+  forbidden:
+    - multiple_hypothesis_tracking_is_novel_by_itself
+    - fixed_lag_tracking_is_novel_by_itself
+    - gt_box_results_are_end_to_end_mot_results
+    - development_results_are_final_test_results
+    - topic_is_a_component_of_the_proposed_method
+    - synthetic_encoder_results_are_experimental_results

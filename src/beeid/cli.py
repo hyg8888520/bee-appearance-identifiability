@@ -42,6 +42,12 @@ from .h3.report import generate_h3_report
 from .h3.signals import build_h3_signals
 from .h3.synthetic import h3_synthetic_smoke
 from .h3.thresholds import fit_h3_thresholds
+from .h4 import H4_PRIMARY_MODELS
+from .h4.core import validate_h4_inputs
+from .h4.experiment import run_h4_recoverability_audit, run_h4_tracking
+from .h4.protocol import validate_h4_protocol
+from .h4.report import generate_h4_report
+from .h4.synthetic import h4_synthetic_smoke
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -143,6 +149,39 @@ def _parser() -> argparse.ArgumentParser:
         "h3-synthetic-smoke", help="Run CPU-only H3 tracking smoke with a test-only encoder"
     )
     h3_synthetic.add_argument("--output", type=Path)
+    h4_validate_protocol = subparsers.add_parser(
+        "h4-validate-protocol", help="Validate the frozen H4 development protocol"
+    )
+    h4_validate_protocol.add_argument("--protocol", type=Path, required=True)
+    h4_validate_protocol.add_argument("--checksum", type=Path)
+    configured("h4-validate", "Validate completed H3 inputs and final-test isolation")
+    h4_audit = configured(
+        "h4-audit", "Run the GT-separated future-evidence recoverability gate"
+    )
+    h4_audit.add_argument(
+        "--models", nargs="+", choices=H4_PRIMARY_MODELS, required=True
+    )
+    h4_track = configured(
+        "h4-track", "Run immediate and fixed-lag branch-isolation ablations"
+    )
+    h4_track.add_argument(
+        "--models", nargs="+", choices=H4_PRIMARY_MODELS, required=True
+    )
+    h4_track.add_argument("--override-audit-stop", action="store_true")
+    h4_report = configured("h4-report", "Generate H4 decisions, uncertainty, and failures")
+    h4_report.add_argument(
+        "--models", nargs="+", choices=H4_PRIMARY_MODELS, required=True
+    )
+    h4_all = configured("h4-run-all", "Run the gated H4 development workflow")
+    h4_all.add_argument(
+        "--models", nargs="+", choices=H4_PRIMARY_MODELS, default=list(H4_PRIMARY_MODELS)
+    )
+    h4_all.add_argument("--confirm-full", action="store_true")
+    h4_all.add_argument("--override-audit-stop", action="store_true")
+    h4_synthetic = subparsers.add_parser(
+        "h4-synthetic-smoke", help="Run CPU-only H4 smoke with test-only cached features"
+    )
+    h4_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -259,6 +298,39 @@ def _run_h3_all(config: object, models: list[str], confirm_full: bool) -> dict[s
     }
 
 
+def _run_h4_all(
+    config: object,
+    models: list[str],
+    confirm_full: bool,
+    override_audit_stop: bool,
+) -> dict[str, object]:
+    h4 = config.h4  # type: ignore[attr-defined]
+    if h4 is None:
+        raise RuntimeError("H4 commands require an h4 config section")
+    if not h4.allow_subset and not confirm_full:
+        raise RuntimeError(
+            "Full H4 development is gated; pass --confirm-full only after synthetic "
+            "and real-data subset smoke tests"
+        )
+    validate_h4_inputs(config)  # type: ignore[arg-type]
+    audit = run_h4_recoverability_audit(config, models)  # type: ignore[arg-type]
+    gate_passed = audit["decision"]["gate_passed"] is True
+    tracking: dict[str, object] | None = None
+    if gate_passed or override_audit_stop:
+        tracking = run_h4_tracking(  # type: ignore[arg-type]
+            config, models, override_audit_stop=override_audit_stop
+        )
+    metadata = generate_h4_report(config, models)  # type: ignore[arg-type]
+    return {
+        "status": metadata["status"],
+        "models": models,
+        "recoverability_gate": audit["decision"]["status"],
+        "method_evaluated": tracking is not None,
+        "assignment_rows": None if tracking is None else tracking["assignment_row_count"],
+        "final_test_read": False,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
@@ -270,8 +342,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h25_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-synthetic-smoke":
             result = h3_synthetic_smoke(arguments.output)
+        elif arguments.command == "h4-synthetic-smoke":
+            result = h4_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
+        elif arguments.command == "h4-validate-protocol":
+            result = validate_h4_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -359,6 +435,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = generate_h3_report(config, arguments.models)
             elif arguments.command == "h3-run-all":
                 result = _run_h3_all(config, arguments.models, arguments.confirm_full)
+            elif arguments.command == "h4-validate":
+                result = validate_h4_inputs(config).audit
+            elif arguments.command == "h4-audit":
+                result = run_h4_recoverability_audit(config, arguments.models)
+            elif arguments.command == "h4-track":
+                result = run_h4_tracking(
+                    config,
+                    arguments.models,
+                    override_audit_stop=arguments.override_audit_stop,
+                )
+            elif arguments.command == "h4-report":
+                result = generate_h4_report(config, arguments.models)
+            elif arguments.command == "h4-run-all":
+                result = _run_h4_all(
+                    config,
+                    arguments.models,
+                    arguments.confirm_full,
+                    arguments.override_audit_stop,
+                )
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

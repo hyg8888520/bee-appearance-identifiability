@@ -28,3 +28,5 @@ jobs:
           beeid h2-synthetic-smoke
           beeid h25-synthetic-smoke
           beeid h3-validate-protocol --protocol configs/h3_protocol.lock.yaml --checksum configs/h3_protocol.lock.sha256
+          beeid h4-validate-protocol --protocol configs/h4_protocol.lock.yaml --checksum configs/h4_protocol.lock.sha256
+          beeid h4-synthetic-smoke
