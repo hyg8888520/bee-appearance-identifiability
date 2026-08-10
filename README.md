@@ -1,4 +1,32 @@
-# BEE24 H1 Appearance, H2/H2.5 Diagnostics, H3 Tracking, and H4 Deferred Identity
+# BEE24 H1–H4.1 Appearance Reliability and Adaptive Identity Tracking
+
+## H4.1：窗口可恢复性与自适应身份提交
+
+真实 H4-v1 已按冻结协议得到 `STOP_NO_RECOVERABILITY_SIGNAL`：精确 `t+10` joint recoverability 只有 ResNet50 10.60% 和 DINOv3 5.76%。这个结论保持不变。对事件级产物进一步只读复核发现，在已采样 `{1,3,5,10}` 窗口中“至少恢复过一次”的下界分别为 38.41% 和 38.13%，说明证据可能短暂出现或延后出现。H4.1 因而作为**观察 H4-v1 development 后定义的探索性实验**，连续审计 `t+1…t+10`，并测试最迟 H=5、证据稳定即可提前提交、候选记忆隔离的局部关联。
+
+H4.1 启动时必须保留 H4-v1 STOP，且逐事件复核旧 1/3/5/10 时点；任何差异都会拒绝继续。GT 只用于离线 oracle（真值诊断）和事后指标，不进入分支或提交决策。完整依据与边界见 [H4-v1 evidence](docs/h41_h4_v1_evidence.md)、[H4.1 protocol](docs/h41_protocol.md)、[method/novelty](docs/h41_method_and_novelty.md) 与 [server deployment](docs/h41_server_deployment.md)。
+
+本地首次验证：
+
+```bash
+~/venvs/beeid-dino/bin/python -m beeid.cli h41-validate-protocol \
+  --protocol configs/h41_protocol.lock.yaml \
+  --checksum configs/h41_protocol.lock.sha256
+~/venvs/beeid-dino/bin/python -m beeid.cli h41-synthetic-smoke \
+  --output ~/experiments/bee-appearance-identifiability/h41-synthetic
+```
+
+服务器真实运行：
+
+```bash
+cp configs/h41_smoke.example.yaml configs/h41_smoke.local.yaml
+cp configs/h41.example.yaml configs/h41.local.yaml
+# 编辑外部路径，尤其是 h1_output_root、h3_output_root、h4_output_root、output_root。
+bash scripts/h41_smoke_test.sh configs/h41_smoke.local.yaml ~/venvs/beeid-dino/bin/python
+bash scripts/run_h41.sh configs/h41.local.yaml ~/venvs/beeid-dino/bin/python
+```
+
+H4.1 复用 H3 cache，不训练也不重新提取特征，因此主要占用 CPU、GPU 利用率低是预期行为。真实 H4.1、fixed-detector 和 final confirmation 当前均为 `SERVER_VALIDATION_PENDING`；final test 继续锁定。
 
 ## H4：延迟身份决策与假设隔离记忆
 
@@ -17,7 +45,7 @@ bash scripts/h4_smoke_test.sh configs/h4_smoke.local.yaml ~/venvs/beeid-dino/bin
 bash scripts/run_h4.sh configs/h4.local.yaml ~/venvs/beeid-dino/bin/python
 ```
 
-代码提交时，真实 BEE24 H4 仍为 `SERVER_VALIDATION_PENDING`；synthetic feature 只验证程序契约，不是实验结果。H4 development 协议允许的 final-test 读取次数为 0。
+真实 BEE24 H4-v1 development 审计已经完成并按协议停止；方法阶段没有运行。synthetic feature 只验证程序契约，不是实验结果。H4 development 协议允许的 final-test 读取次数为 0。
 
 ## H2.5 refined memory-contamination 与 H3 冻结协议
 
