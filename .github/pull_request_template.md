@@ -14,6 +14,16 @@
 - [ ] Oracle GT tables and causal tracker tables remain separate
 - [ ] Final test remains unread; fixed detector stage is `SERVER_VALIDATION_PENDING`
 
+## H4.1 adaptive-recovery checklist
+
+- [ ] H4-v1 STOP status and source artifact hashes are preserved read-only
+- [ ] Legacy 1/3/5/10 exact-horizon rows pass event-level crosscheck
+- [ ] Continuous 1..10 and cumulative-by-H estimands keep all baseline IDSW in the denominator
+- [ ] Adaptive decisions read no GT and no frame after the recorded decision frame
+- [ ] Fixed/adaptive and frozen/isolated-memory ablations are all present
+- [ ] H4.1 is labeled exploratory-after-H4-v1, not preregistered confirmation
+- [ ] Real BEE24 H4.1 remains `SERVER_VALIDATION_PENDING`; final test remains unread
+
 ## Scope
 
 Implements BEE24 H1 GT-crop appearance identifiability and H2 observation-reliability/template-contamination diagnostics without committing data, weights, caches, outputs or local YAML.
