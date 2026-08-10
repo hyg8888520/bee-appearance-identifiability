@@ -28,6 +28,7 @@ class PathsConfig:
     h1_output_root: Path | None = None
     h2_output_root: Path | None = None
     h3_output_root: Path | None = None
+    h4_output_root: Path | None = None
     dino_python: Path | None = None
     topic_python: Path | None = None
 
@@ -167,6 +168,27 @@ class H4Config:
 
 
 @dataclass(frozen=True)
+class H41Config:
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    audit_horizons: tuple[int, ...]
+    cumulative_deadlines: tuple[int, ...]
+    gate_deadline: int
+    min_cumulative_recoverable_fraction: float
+    min_events_per_model: int
+    min_videos_with_events: int
+    max_decision_horizon: int
+    min_decision_lag: int
+    decision_margin: float
+    winner_stability_steps: int
+    noninferiority_tolerance: float
+    min_nonharmed_videos: int
+    bootstrap_replicates: int
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -178,6 +200,7 @@ class ExperimentConfig:
     h25: H25Config | None
     h3: H3Config | None
     h4: H4Config | None
+    h41: H41Config | None
 
     @property
     def manifest_path(self) -> Path:
@@ -340,6 +363,22 @@ def _bounded_float(value: Any, label: str, low: float, high: float) -> float:
     return result
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    """Return true when either resolved path contains the other."""
+    first = left.resolve(strict=False)
+    second = right.resolve(strict=False)
+    try:
+        first.relative_to(second)
+        return True
+    except ValueError:
+        pass
+    try:
+        second.relative_to(first)
+        return True
+    except ValueError:
+        return False
+
+
 def load_config(path: str | Path) -> ExperimentConfig:
     config_path = Path(path).expanduser().resolve(strict=False)
     if not config_path.is_file():
@@ -351,7 +390,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     root = _mapping(raw, "config")
     _keys(
         root,
-        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4"},
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41"},
         "config",
     )
     base = config_path.parent
@@ -360,7 +399,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     path_keys = {
         "bee24_root", "output_root", "cache_root", "dinov3_repo", "dinov3_weights",
         "topictrack_repo", "topic_agw_weights", "h1_output_root", "h2_output_root",
-        "h3_output_root",
+        "h3_output_root", "h4_output_root",
         "dino_python", "topic_python",
     }
     _keys(p, path_keys, "paths")
@@ -375,6 +414,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         h1_output_root=_path(p.get("h1_output_root"), base, "paths.h1_output_root", optional=True),
         h2_output_root=_path(p.get("h2_output_root"), base, "paths.h2_output_root", optional=True),
         h3_output_root=_path(p.get("h3_output_root"), base, "paths.h3_output_root", optional=True),
+        h4_output_root=_path(p.get("h4_output_root"), base, "paths.h4_output_root", optional=True),
         dino_python=_path(
             p.get("dino_python"), base, "paths.dino_python", optional=True, preserve_symlink=True
         ),
@@ -906,6 +946,139 @@ def load_config(path: str | Path) -> ExperimentConfig:
             ),
         )
 
+    h41: H41Config | None = None
+    if "h41" in root and root["h41"] is not None:
+        value = _mapping(root["h41"], "h41")
+        _keys(
+            value,
+            {
+                "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+                "audit_horizons", "cumulative_deadlines", "gate_deadline",
+                "min_cumulative_recoverable_fraction", "min_events_per_model",
+                "min_videos_with_events", "max_decision_horizon", "min_decision_lag",
+                "decision_margin", "winner_stability_steps", "noninferiority_tolerance",
+                "min_nonharmed_videos", "bootstrap_replicates",
+            },
+            "h41",
+        )
+        if h4 is None:
+            raise ConfigurationError("h41 requires the frozen h4 section for shared tracker parameters")
+        if paths.h4_output_root is None:
+            raise ConfigurationError("paths.h4_output_root is required when h41 is configured")
+        if paths.h1_output_root is None or paths.h3_output_root is None:
+            raise ConfigurationError("H4.1 requires paths.h1_output_root and paths.h3_output_root")
+        roots = {
+            paths.output_root.resolve(strict=False),
+            paths.h1_output_root.resolve(strict=False),
+            paths.h3_output_root.resolve(strict=False),
+            paths.h4_output_root.resolve(strict=False),
+        }
+        if len(roots) != 4:
+            raise ConfigurationError("H4.1 output_root must differ from H1, H3, and H4-v1 roots")
+        for label, source_root in (
+            ("H1", paths.h1_output_root),
+            ("H3", paths.h3_output_root),
+            ("H4-v1", paths.h4_output_root),
+        ):
+            if _paths_overlap(paths.output_root, source_root):
+                raise ConfigurationError(
+                    f"H4.1 output_root must not contain or be contained by the {label} source root"
+                )
+        if dataset.source_splits != ("train",) or protocol.evaluation_split != "validation":
+            raise ConfigurationError(
+                "H4.1 development is restricted to the frozen train-derived validation split"
+            )
+        audit_horizons = _ints(
+            _require(value, "audit_horizons", "h41"), "h41.audit_horizons"
+        )
+        if audit_horizons != tuple(range(1, 11)):
+            raise ConfigurationError("h41.audit_horizons is frozen at every lag from 1 through 10")
+        deadlines = _ints(
+            _require(value, "cumulative_deadlines", "h41"),
+            "h41.cumulative_deadlines",
+        )
+        if tuple(sorted(set(deadlines))) != deadlines or any(
+            item not in audit_horizons for item in deadlines
+        ):
+            raise ConfigurationError(
+                "h41.cumulative_deadlines must be unique, increasing audit horizons"
+            )
+        gate_deadline = _positive_int(
+            _require(value, "gate_deadline", "h41"), "h41.gate_deadline"
+        )
+        max_decision_horizon = _positive_int(
+            _require(value, "max_decision_horizon", "h41"),
+            "h41.max_decision_horizon",
+        )
+        if gate_deadline not in deadlines:
+            raise ConfigurationError("h41.gate_deadline must occur in cumulative_deadlines")
+        if max_decision_horizon != gate_deadline:
+            raise ConfigurationError(
+                "h41.max_decision_horizon must equal the cumulative gate deadline"
+            )
+        min_decision_lag = _positive_int(
+            _require(value, "min_decision_lag", "h41"), "h41.min_decision_lag"
+        )
+        if min_decision_lag > max_decision_horizon:
+            raise ConfigurationError("h41.min_decision_lag cannot exceed max_decision_horizon")
+        h41 = H41Config(
+            protocol_lock_path=_path(
+                _require(value, "protocol_lock", "h41"), base, "h41.protocol_lock"
+            ),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(
+                _require(value, "protocol_checksum", "h41"),
+                base,
+                "h41.protocol_checksum",
+            ),  # type: ignore[arg-type]
+            project_split_path=_path(
+                _require(value, "project_split", "h41"), base, "h41.project_split"
+            ),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h41"), "h41.allow_subset"),
+            audit_horizons=audit_horizons,
+            cumulative_deadlines=deadlines,
+            gate_deadline=gate_deadline,
+            min_cumulative_recoverable_fraction=_bounded_float(
+                _require(value, "min_cumulative_recoverable_fraction", "h41"),
+                "h41.min_cumulative_recoverable_fraction",
+                0.0,
+                1.0,
+            ),
+            min_events_per_model=_positive_int(
+                _require(value, "min_events_per_model", "h41"),
+                "h41.min_events_per_model",
+            ),
+            min_videos_with_events=_positive_int(
+                _require(value, "min_videos_with_events", "h41"),
+                "h41.min_videos_with_events",
+            ),
+            max_decision_horizon=max_decision_horizon,
+            min_decision_lag=min_decision_lag,
+            decision_margin=_bounded_float(
+                _require(value, "decision_margin", "h41"),
+                "h41.decision_margin",
+                0.0,
+                1.0,
+            ),
+            winner_stability_steps=_positive_int(
+                _require(value, "winner_stability_steps", "h41"),
+                "h41.winner_stability_steps",
+            ),
+            noninferiority_tolerance=_bounded_float(
+                _require(value, "noninferiority_tolerance", "h41"),
+                "h41.noninferiority_tolerance",
+                0.0,
+                0.1,
+            ),
+            min_nonharmed_videos=_positive_int(
+                _require(value, "min_nonharmed_videos", "h41"),
+                "h41.min_nonharmed_videos",
+            ),
+            bootstrap_replicates=_positive_int(
+                _require(value, "bootstrap_replicates", "h41"),
+                "h41.bootstrap_replicates",
+            ),
+        )
+
     return ExperimentConfig(
-        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41
     )

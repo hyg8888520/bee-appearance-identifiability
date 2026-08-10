@@ -1,4 +1,4 @@
-"""Composable command-line interface for the BEE24 H1 through H3 experiments."""
+"""Composable command-line interface for the BEE24 H1 through H4.1 experiments."""
 
 from __future__ import annotations
 
@@ -48,11 +48,17 @@ from .h4.experiment import run_h4_recoverability_audit, run_h4_tracking
 from .h4.protocol import validate_h4_protocol
 from .h4.report import generate_h4_report
 from .h4.synthetic import h4_synthetic_smoke
+from .h41 import H41_PRIMARY_MODELS
+from .h41.core import validate_h41_inputs
+from .h41.experiment import run_h41_tracking, run_h41_window_audit
+from .h41.protocol import validate_h41_protocol
+from .h41.report import generate_h41_report
+from .h41.synthetic import h41_synthetic_smoke
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="beeid", description="BEE24 H1 appearance through H3 tracking experiments"
+        prog="beeid", description="BEE24 H1 appearance through H4.1 tracking experiments"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -182,6 +188,45 @@ def _parser() -> argparse.ArgumentParser:
         "h4-synthetic-smoke", help="Run CPU-only H4 smoke with test-only cached features"
     )
     h4_synthetic.add_argument("--output", type=Path)
+    h41_validate_protocol = subparsers.add_parser(
+        "h41-validate-protocol", help="Validate the frozen exploratory H4.1 protocol"
+    )
+    h41_validate_protocol.add_argument("--protocol", type=Path, required=True)
+    h41_validate_protocol.add_argument("--checksum", type=Path)
+    configured(
+        "h41-validate", "Validate H3 and preserved H4-v1 inputs without final-test access"
+    )
+    h41_audit = configured(
+        "h41-audit", "Run continuous-lag and cumulative-window recoverability audit"
+    )
+    h41_audit.add_argument(
+        "--models", nargs="+", choices=H41_PRIMARY_MODELS, required=True
+    )
+    h41_track = configured(
+        "h41-track", "Run fixed and adaptive-lag branch-memory ablations"
+    )
+    h41_track.add_argument(
+        "--models", nargs="+", choices=H41_PRIMARY_MODELS, required=True
+    )
+    h41_track.add_argument("--override-audit-stop", action="store_true")
+    h41_report = configured(
+        "h41-report", "Generate H4.1 exploratory decisions, uncertainty, and failures"
+    )
+    h41_report.add_argument(
+        "--models", nargs="+", choices=H41_PRIMARY_MODELS, required=True
+    )
+    h41_all = configured("h41-run-all", "Run the gated H4.1 development workflow")
+    h41_all.add_argument(
+        "--models", nargs="+", choices=H41_PRIMARY_MODELS,
+        default=list(H41_PRIMARY_MODELS),
+    )
+    h41_all.add_argument("--confirm-full", action="store_true")
+    h41_all.add_argument("--override-audit-stop", action="store_true")
+    h41_synthetic = subparsers.add_parser(
+        "h41-synthetic-smoke",
+        help="Run CPU-only H4.1 smoke with a preserved synthetic H4-v1 STOP",
+    )
+    h41_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -331,6 +376,41 @@ def _run_h4_all(
     }
 
 
+def _run_h41_all(
+    config: object,
+    models: list[str],
+    confirm_full: bool,
+    override_audit_stop: bool,
+) -> dict[str, object]:
+    h41 = config.h41  # type: ignore[attr-defined]
+    if h41 is None:
+        raise RuntimeError("H4.1 commands require an h41 config section")
+    if not h41.allow_subset and not confirm_full:
+        raise RuntimeError(
+            "Full H4.1 development is gated; pass --confirm-full only after synthetic "
+            "and real-data subset smoke tests"
+        )
+    validate_h41_inputs(config)  # type: ignore[arg-type]
+    audit = run_h41_window_audit(config, models)  # type: ignore[arg-type]
+    gate_passed = audit["decision"]["gate_passed"] is True
+    tracking: dict[str, object] | None = None
+    if gate_passed or override_audit_stop:
+        tracking = run_h41_tracking(  # type: ignore[arg-type]
+            config, models, override_audit_stop=override_audit_stop
+        )
+    metadata = generate_h41_report(config, models)  # type: ignore[arg-type]
+    return {
+        "status": metadata["status"],
+        "models": models,
+        "window_recoverability_gate": audit["decision"]["status"],
+        "source_h4_v1_conclusion_preserved": True,
+        "method_evaluated": tracking is not None,
+        "assignment_rows": None if tracking is None else tracking["assignment_row_count"],
+        "fixed_detector_boxes": "SERVER_VALIDATION_PENDING",
+        "final_test_read": False,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
@@ -344,10 +424,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h3_synthetic_smoke(arguments.output)
         elif arguments.command == "h4-synthetic-smoke":
             result = h4_synthetic_smoke(arguments.output)
+        elif arguments.command == "h41-synthetic-smoke":
+            result = h41_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h4-validate-protocol":
             result = validate_h4_protocol(arguments.protocol, arguments.checksum)
+        elif arguments.command == "h41-validate-protocol":
+            result = validate_h41_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -449,6 +533,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = generate_h4_report(config, arguments.models)
             elif arguments.command == "h4-run-all":
                 result = _run_h4_all(
+                    config,
+                    arguments.models,
+                    arguments.confirm_full,
+                    arguments.override_audit_stop,
+                )
+            elif arguments.command == "h41-validate":
+                result = validate_h41_inputs(config).audit
+            elif arguments.command == "h41-audit":
+                result = run_h41_window_audit(config, arguments.models)
+            elif arguments.command == "h41-track":
+                result = run_h41_tracking(
+                    config,
+                    arguments.models,
+                    override_audit_stop=arguments.override_audit_stop,
+                )
+            elif arguments.command == "h41-report":
+                result = generate_h41_report(config, arguments.models)
+            elif arguments.command == "h41-run-all":
+                result = _run_h41_all(
                     config,
                     arguments.models,
                     arguments.confirm_full,
