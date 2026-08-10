@@ -231,7 +231,10 @@ def _idsw_svg(path: Path, rows: Sequence[dict[str, str]]) -> None:
     labels = [f"{row['model']}\n{row['variant'].replace('fixed_lag_isolated_memory_', '')}" for row in selected]
     values = [int(float(row["IDSW"])) for row in selected]
     width, height = 760, 440
-    maximum = max(values or [1])
+    # A short smoke sequence can legitimately contain no identity switches for
+    # either variant.  Keep a non-zero plotting scale instead of treating that
+    # valid all-zero result as an arithmetic error.
+    maximum = max(1, max(values, default=0))
     bar_w = 520 / max(1, len(values))
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">', '<rect width="100%" height="100%" fill="white"/>', '<text x="380" y="28" text-anchor="middle" font-family="sans-serif" font-size="18">Immediate vs primary fixed-lag ID switches</text>']
     for index, (label, value) in enumerate(zip(labels, values)):

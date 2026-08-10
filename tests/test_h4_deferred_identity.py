@@ -17,6 +17,7 @@ from beeid.h4.recoverability import (
     recoverability_decision,
     summarize_recoverability,
 )
+from beeid.h4.report import _idsw_svg
 from beeid.h4.synthetic import h4_synthetic_smoke
 from beeid.h4.tracker import (
     H4_PRIMARY_VARIANT,
@@ -216,6 +217,20 @@ def test_recoverability_gate_requires_each_requested_model():
     decision = recoverability_decision(summary, ["resnet50", "dinov3"], config)
     assert decision["status"] == "GO_METHOD_EVALUATION"
     assert all(item["pass"] for item in decision["model_checks"])
+
+
+def test_idswitch_figure_accepts_an_all_zero_smoke_result(tmp_path):
+    output = tmp_path / "idsw.svg"
+    rows = [
+        {"model": model, "variant": variant, "IDSW": "0"}
+        for model in ("resnet50", "dinov3")
+        for variant in ("immediate_commit", H4_PRIMARY_VARIANT)
+    ]
+    _idsw_svg(output, rows)
+    rendered = output.read_text(encoding="utf-8")
+    assert "Immediate vs primary fixed-lag ID switches" in rendered
+    assert "nan" not in rendered.lower()
+    assert "inf" not in rendered.lower()
 
 
 def test_h4_protocol_examples_scripts_and_checksum_are_locked(tmp_path):
