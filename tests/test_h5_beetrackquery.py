@@ -1,0 +1,690 @@
+from __future__ import annotations
+
+import json
+from collections import deque
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+import yaml
+
+from beeid.config import load_config
+from beeid.cache import FeatureCache
+from beeid.data.mot import Observation
+from beeid.h5 import H5_PRIMARY_VARIANT, H5_VARIANTS
+from beeid.h5.model import BeeTrackQuery, supervised_transition
+from beeid.h5.core import H5Inputs, load_h5_source_embeddings
+from beeid.h5 import experiment as h5_experiment
+from beeid.h5.experiment import (
+    TrainingTransition,
+    _batched_transition_loss,
+    _fit_model,
+    _load_tracking_job,
+    _tracking_fingerprint,
+    _tracking_rows_digest,
+    _tracking_signature,
+    track_h5,
+    _transition_batches,
+)
+from beeid.h3.core import H3Inputs
+from beeid.h5.protocol import H5ProtocolError, validate_h5_protocol
+from beeid.h5.synthetic import h5_synthetic_smoke
+from beeid.h5.tracker import QueryTrack, _batched_memory_read, track_sequence, track_sequences_batched
+from beeid.h3.assignment import maximum_weight_matching
+from beeid.utils import atomic_write_json
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _observation(frame: int, identity: int, x: float) -> Observation:
+    return Observation(
+        observation_id=f"validation:v:{frame:06d}:{identity}", split="validation",
+        source_split="train", video_id="v", track_id=identity, identity=f"v:{identity}",
+        frame=frame, frame_id=frame, image_path=f"train/v/img1/{frame:06d}.jpg",
+        image_width=100, image_height=80, original_width=20.0, original_height=20.0,
+        raw_x=x+1, raw_y=21, raw_w=20, raw_h=20, bbox_x1=x, bbox_y1=20,
+        bbox_x2=x+20, bbox_y2=40, x1=int(x), y1=20, x2=int(x+20), y2=40,
+        crop_expansion=0.2, crop_clipped=False, center_x=x+10, center_y=30,
+        bbox_area=400, confidence=1, object_class=1, visibility=1,
+        skip_reason="", extra_columns="[]",
+    )
+
+
+def test_h5_protocol_config_and_checksum_are_frozen(tmp_path):
+    result = validate_h5_protocol(
+        ROOT / "configs" / "h5_protocol.lock.yaml",
+        ROOT / "configs" / "h5_protocol.lock.sha256",
+    )
+    assert result["primary_variant"] == H5_PRIMARY_VARIANT
+    assert tuple(result["variants"]) == H5_VARIANTS
+    assert result["fit_partition"] == "project_train"
+    assert result["final_test_access"] is False
+    for name, subset in (("h5.example.yaml", False), ("h5.local.yaml.example", False), ("h5_smoke.example.yaml", True)):
+        config = load_config(ROOT / "configs" / name)
+        assert config.h5 is not None and config.h3 is not None
+        assert config.h5.allow_subset is subset
+        assert config.paths.h3_output_root != config.paths.output_root
+    bad = tmp_path / "bad.sha256"
+    bad.write_text("0" * 64 + "  h5_protocol.lock.yaml\n", encoding="utf-8")
+    with pytest.raises(H5ProtocolError, match="checksum mismatch"):
+        validate_h5_protocol(ROOT / "configs" / "h5_protocol.lock.yaml", bad)
+    legacy = tmp_path / "legacy-local.yaml"
+    legacy.write_text(
+        (ROOT / "configs" / "h5_smoke.example.yaml").read_text(encoding="utf-8")
+        .replace(", max_pair_elements_per_batch: 262144", "")
+        .replace(", checkpoint_interval_batches: 25", ""),
+        encoding="utf-8",
+    )
+    legacy_config = load_config(legacy)
+    assert legacy_config.h5 is not None
+    assert legacy_config.h5.max_pair_elements_per_batch == 262144
+    assert legacy_config.h5.checkpoint_interval_batches == 25
+
+
+def test_beetrackquery_contract_and_supervised_reliability_loss():
+    model = BeeTrackQuery(8, 16, 4, 0.0)
+    embeddings = torch.nn.functional.normalize(torch.randn(3, 8), dim=1)
+    geometry = torch.rand(3, 4)
+    tokens = model.encode_detections(embeddings, geometry)
+    assert tokens.shape == (3, 16)
+    refreshed = model.refresh(tokens[:2], tokens)
+    delta = torch.abs(geometry[:2, None, :] - geometry[None, :, :])
+    logits = model.pair_logits(refreshed, tokens, delta)
+    assert logits.shape == (2, 3)
+    reliability = model.reliability(logits)
+    assert reliability.shape == (2,)
+    assert torch.all((reliability >= 0) & (reliability <= 1))
+    result = supervised_transition(model, tokens[:2], ["v:1", "v:2"], tokens, ["v:1", "v:2", "v:3"], delta)
+    assert result is not None
+    (result.association_loss + result.reliability_loss).backward()
+    assert any(parameter.grad is not None for parameter in model.parameters())
+
+
+def test_reliability_loss_is_amp_safe():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float16 if device.type == "cuda" else torch.bfloat16
+    model = BeeTrackQuery(8, 16, 4, 0.0).to(device)
+    embeddings = torch.nn.functional.normalize(torch.randn(3, 8, device=device), dim=1)
+    geometry = torch.rand(3, 4, device=device)
+    with torch.autocast(device_type=device.type, dtype=dtype):
+        tokens = model.encode_detections(embeddings, geometry)
+        delta = torch.abs(geometry[:2, None, :] - geometry[None, :, :])
+        result = supervised_transition(
+            model, tokens[:2], ["v:1", "v:2"], tokens,
+            ["v:1", "v:2", "v:3"], delta,
+        )
+        assert result is not None
+        loss = result.association_loss + result.reliability_loss
+    loss.backward()
+
+
+def test_batched_transition_matches_single_transition_objective():
+    torch.manual_seed(24)
+    model = BeeTrackQuery(8, 16, 4, 0.0)
+    model.eval()
+    embeddings = np.random.default_rng(24).normal(size=(5, 8)).astype(np.float32)
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    geometry = np.random.default_rng(25).random((5, 4), dtype=np.float32)
+    transition = TrainingTransition((0, 1), (2, 3, 4), (0, 1))
+    actual, pair_count, prediction_count = _batched_transition_loss(
+        model, [transition], [0], embeddings, geometry, torch.device("cpu"), 0.25
+    )
+    previous_tokens = model.encode_detections(
+        torch.from_numpy(embeddings[[0, 1]]), torch.from_numpy(geometry[[0, 1]])
+    )
+    current_tokens = model.encode_detections(
+        torch.from_numpy(embeddings[[2, 3, 4]]), torch.from_numpy(geometry[[2, 3, 4]])
+    )
+    delta = torch.abs(
+        torch.from_numpy(geometry[[0, 1]])[:, None, :]
+        - torch.from_numpy(geometry[[2, 3, 4]])[None, :, :]
+    )
+    expected = supervised_transition(
+        model,
+        previous_tokens,
+        ["v:1", "v:2"],
+        current_tokens,
+        ["v:1", "v:2", "v:3"],
+        delta,
+    )
+    assert expected is not None
+    expected_loss = expected.association_loss + 0.25 * expected.reliability_loss
+    assert torch.allclose(actual, expected_loss, atol=1e-6, rtol=1e-6)
+    assert pair_count == 6
+    assert prediction_count == 2
+
+
+def test_transition_batcher_respects_batch_and_pair_budgets():
+    transitions = [
+        TrainingTransition(tuple(range(queries)), tuple(range(detections)), tuple(0 for _ in range(queries)))
+        for queries, detections in ((2, 3), (3, 4), (1, 2), (4, 4), (2, 5))
+    ]
+    batches = _transition_batches(transitions, range(len(transitions)), 3, 32)
+    assert [index for batch in batches for index in batch] == list(range(len(transitions)))
+    for batch in batches:
+        assert len(batch) <= 3
+        assert len(batch) * max(transitions[index].query_count for index in batch) * max(
+            transitions[index].detection_count for index in batch
+        ) <= 32
+
+
+def test_batched_trainer_writes_live_and_resumable_checkpoints(tmp_path):
+    observations = tuple(
+        _observation(frame, identity, 10 if identity == 1 else 55)
+        for frame in range(1, 7)
+        for identity in (1, 2)
+    )
+    audit = {
+        "manifest_sha256": "a" * 64,
+        "protocol_sha256": "b" * 64,
+        "project_split_sha256": "c" * 64,
+        "h5_protocol_sha256": "d" * 64,
+    }
+    h3_inputs = H3Inputs(
+        observations,
+        {item.observation_id: "project_train" for item in observations},
+        {"project_train": ("v",), "development_validation": ("d",), "final_test": ("t",)},
+        audit,
+    )
+    inputs = H5Inputs(h3_inputs, audit)
+    config = load_config(ROOT / "configs" / "h5_smoke.example.yaml")
+    assert config.h5 is not None
+    configured = replace(
+        config,
+        paths=replace(config.paths, output_root=tmp_path / "h5-output"),
+        runtime=replace(config.runtime, device="cpu", amp=False, batch_size=2),
+        h5=replace(
+            config.h5,
+            epochs=2,
+            clip_length=3,
+            train_clip_stride=1,
+            max_train_clips_per_video=4,
+            max_pair_elements_per_batch=32,
+            checkpoint_interval_batches=1,
+        ),
+    )
+    embeddings = np.random.default_rng(24).normal(size=(len(observations), 8)).astype(np.float32)
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    _, metadata = _fit_model(
+        configured,
+        inputs,
+        embeddings,
+        "test_model",
+        {"cache_fingerprint": "cache-test"},
+    )
+    assert metadata["status"] == "completed"
+    assert metadata["training_transition_count"] > 0
+    assert metadata["optimizer_step_count"] > 0
+    progress = json.loads(
+        (configured.paths.output_root / "h5_logs" / "test_model_progress.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert progress["status"] == "completed"
+    assert (configured.paths.output_root / "h5_checkpoints" / "test_model" / "training-progress.pt").is_file()
+    _, resumed = _fit_model(
+        configured,
+        inputs,
+        embeddings,
+        "test_model",
+        {"cache_fingerprint": "cache-test"},
+    )
+    assert resumed["status"] == "resumed"
+
+
+def test_tracker_is_causal_and_gt_identity_permutation_does_not_change_predictions():
+    observations = [_observation(frame, identity, 10 if identity == 1 else 55) for frame in range(1, 5) for identity in (1, 2)]
+    embeddings = np.stack([np.asarray([1, 0, item.center_x / 100, 0], dtype=np.float32) for item in observations])
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    config = load_config(ROOT / "configs" / "h5_smoke.example.yaml")
+    assert config.h5 is not None
+    model = BeeTrackQuery(4, 128, 4, 0.1)
+    first = track_sequence("m", H5_PRIMARY_VARIANT, model, observations, embeddings, config.h5, torch.device("cpu"))
+    permuted = [Observation(**{**item.to_dict(), "track_id": 99 - item.track_id, "identity": f"v:{99-item.track_id}"}) for item in observations]
+    second = track_sequence("m", H5_PRIMARY_VARIANT, model, permuted, embeddings, config.h5, torch.device("cpu"))
+    assert [row["predicted_track_id"] for row in first] == [row["predicted_track_id"] for row in second]
+    assert all(row["frame_id"] == observations[index].frame for index, row in enumerate(first))
+
+
+def test_h5_can_select_a_subset_from_a_strictly_valid_h3_superset_cache(tmp_path):
+    selected_observations = (_observation(1, 1, 10), _observation(2, 1, 11))
+    audit = {
+        "manifest_sha256": "a" * 64,
+        "protocol_sha256": "b" * 64,
+        "project_split_sha256": "c" * 64,
+    }
+    h3_inputs = H3Inputs(
+        selected_observations,
+        {item.observation_id: "project_train" for item in selected_observations},
+        {"project_train": ("v",), "development_validation": ("d",), "final_test": ("t",)},
+        audit,
+    )
+    inputs = H5Inputs(h3_inputs, audit)
+    config = load_config(ROOT / "configs" / "h5_smoke.example.yaml")
+    source_root = tmp_path / "h3-output"
+    cache = FeatureCache(
+        tmp_path / "cache",
+        "h3__resnet50",
+        {
+            "experiment": "H3_RAM_Bee", "implementation": "beeid.h3.features:v1",
+            **audit, "crop_expansion": 0.2, "input_size": 224,
+            "final_test_read": False, "model": {"name": "resnet50"},
+        },
+    )
+    cache.initialize()
+    extra_id = "validation:v:000003:1"
+    values = np.eye(3, dtype=np.float32)
+    cache.write_shard(
+        0,
+        [selected_observations[0].observation_id, extra_id, selected_observations[1].observation_id],
+        values,
+    )
+    source_root.mkdir()
+    (source_root / "h3_cache_locations.json").write_text(
+        json.dumps({"resnet50": str(cache.directory)}), encoding="utf-8"
+    )
+    configured = replace(
+        config,
+        paths=replace(config.paths, h3_output_root=source_root, output_root=tmp_path / "h5-output"),
+    )
+    loaded, source_audit = load_h5_source_embeddings(configured, "resnet50", inputs)
+    assert loaded.shape == (2, 3)
+    assert np.allclose(loaded[0], values[0])
+    assert np.allclose(loaded[1], values[2])
+    assert source_audit["source_cache_observation_scope"].startswith("superset_allowed")
+    assert source_audit["aligned_cache_status"] == "built"
+    reused, reused_audit = load_h5_source_embeddings(configured, "resnet50", inputs)
+    assert reused_audit["aligned_cache_status"] == "reused"
+    assert isinstance(reused, np.memmap)
+    assert np.allclose(reused, loaded)
+
+
+def test_h5_synthetic_smoke_is_resumable_and_not_a_real_result(tmp_path):
+    output = tmp_path / "h5-synthetic"
+    result = h5_synthetic_smoke(output)
+    assert result["status"] == "passed"
+    assert result["metadata_status"] == "SERVER_VALIDATION_PENDING"
+    assert result["checkpoint_resume_verified"] is True
+    assert result["final_test_read"] is False
+    metadata = json.loads((output / "h5_run_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["test_only_encoder"] is True
+    assert metadata["real_experiment_result"] is False
+
+
+def _legacy_hungarian_min(cost: np.ndarray) -> list[tuple[int, int]]:
+    """Pre-v3 scalar implementation retained only as an equivalence oracle."""
+    values = np.asarray(cost, dtype=np.float64)
+    size = values.shape[0]
+    u = np.zeros(size + 1, dtype=np.float64)
+    v = np.zeros(size + 1, dtype=np.float64)
+    p = np.zeros(size + 1, dtype=np.int64)
+    way = np.zeros(size + 1, dtype=np.int64)
+    for row in range(1, size + 1):
+        p[0] = row
+        minimum = np.full(size + 1, np.inf, dtype=np.float64)
+        used = np.zeros(size + 1, dtype=bool)
+        column = 0
+        while True:
+            used[column] = True
+            active_row = int(p[column])
+            delta = np.inf
+            next_column = 0
+            for candidate in range(1, size + 1):
+                if used[candidate]:
+                    continue
+                current = values[active_row - 1, candidate - 1] - u[active_row] - v[candidate]
+                if current < minimum[candidate]:
+                    minimum[candidate] = current
+                    way[candidate] = column
+                if minimum[candidate] < delta:
+                    delta = minimum[candidate]
+                    next_column = candidate
+            for candidate in range(size + 1):
+                if used[candidate]:
+                    u[p[candidate]] += delta
+                    v[candidate] -= delta
+                else:
+                    minimum[candidate] -= delta
+            column = next_column
+            if p[column] == 0:
+                break
+        while True:
+            previous = int(way[column])
+            p[column] = p[previous]
+            column = previous
+            if column == 0:
+                break
+    return [(int(p[column]) - 1, column - 1) for column in range(1, size + 1)]
+
+
+def _legacy_matching(
+    scores: np.ndarray, valid: np.ndarray | None, minimum_score: float | None
+) -> list[tuple[int, int]]:
+    values = np.asarray(scores, dtype=np.float64)
+    rows, columns = values.shape
+    allowed = np.ones_like(values, dtype=bool) if valid is None else np.asarray(valid, dtype=bool).copy()
+    if minimum_score is not None:
+        allowed &= values >= minimum_score
+    padded = np.zeros((rows + columns, rows + columns), dtype=np.float64)
+    padded[:rows, :columns] = np.where(allowed, values, -1_000_000.0)
+    maximum = float(np.max(padded))
+    return sorted(
+        (row, column)
+        for row, column in _legacy_hungarian_min(maximum - padded)
+        if row < rows and column < columns and allowed[row, column]
+    )
+
+
+def _brute_force_matching_score(
+    scores: np.ndarray, valid: np.ndarray, minimum_score: float | None
+) -> float:
+    allowed = np.asarray(valid, dtype=bool).copy()
+    if minimum_score is not None:
+        allowed &= scores >= minimum_score
+    best = 0.0
+    def visit(row: int, used: set[int], score: float) -> None:
+        nonlocal best
+        if row == scores.shape[0]:
+            best = max(best, score)
+            return
+        visit(row + 1, used, score)
+        for column in range(scores.shape[1]):
+            if allowed[row, column] and column not in used:
+                visit(row + 1, used | {column}, score + float(scores[row, column]))
+    visit(0, set(), 0.0)
+    return best
+
+
+def test_vectorized_hungarian_matches_legacy_for_random_rectangular_invalid_and_ties():
+    rng = np.random.default_rng(61)
+    cases: list[tuple[np.ndarray, np.ndarray, float | None]] = [
+        (np.ones((3, 3), dtype=np.float64), np.ones((3, 3), dtype=bool), None),
+        (np.asarray([[0.5, 0.5, 0.2], [0.5, 0.5, 0.2]]), np.asarray([[1, 0, 1], [1, 1, 0]], dtype=bool), 0.5),
+        (np.asarray([[0.1, 0.9], [0.9, 0.1], [0.4, 0.4]]), np.asarray([[1, 1], [0, 1], [1, 0]], dtype=bool), 0.5),
+    ]
+    for rows, columns in ((1, 4), (2, 3), (3, 2), (4, 4), (5, 3)):
+        for minimum in (None, 0.2, 0.5, 0.8):
+            cases.append((rng.random((rows, columns)), rng.random((rows, columns)) > 0.25, minimum))
+    for scores, valid, minimum in cases:
+        assert maximum_weight_matching(scores, valid=valid, minimum_score=minimum) == _legacy_matching(scores, valid, minimum)
+    for rows in range(1, 5):
+        for columns in range(1, 5):
+            for minimum in (None, 0.25, 0.5, 0.75):
+                for _ in range(12):
+                    # Quantisation deliberately creates many tie cases.
+                    scores = rng.integers(0, 5, size=(rows, columns)).astype(np.float64) / 4.0
+                    valid = rng.random((rows, columns)) > 0.3
+                    actual = maximum_weight_matching(scores, valid=valid, minimum_score=minimum)
+                    assert actual == _legacy_matching(scores, valid, minimum)
+                    assert len({column for _, column in actual}) == len(actual)
+                    assert all(valid[row, column] for row, column in actual)
+                    assert np.isclose(
+                        sum(float(scores[row, column]) for row, column in actual),
+                        _brute_force_matching_score(scores, valid, minimum),
+                    )
+
+
+def _rows_without_float_noise(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    ignored = {"association_score", "reliability"}
+    return [{key: value for key, value in row.items() if key not in ignored} for row in rows]
+
+
+@torch.inference_mode()
+def _legacy_memory_read(
+    model: BeeTrackQuery,
+    queries: torch.Tensor,
+    tracks_by_job: list[list[QueryTrack]],
+    use_memory: list[bool],
+    memory_top_k: int,
+) -> torch.Tensor:
+    expected = queries.clone()
+    for job_index, tracks in enumerate(tracks_by_job):
+        if not use_memory[job_index]:
+            continue
+        for track_index, track in enumerate(tracks):
+            if not track.memory:
+                continue
+            values = torch.stack(list(track.memory))
+            similarities = torch.nn.functional.cosine_similarity(
+                values,
+                queries[job_index, track_index].unsqueeze(0),
+                dim=1,
+            )
+            selected = values[torch.topk(similarities, min(memory_top_k, len(track.memory))).indices]
+            expected[job_index, track_index] = model.read_memory(
+                queries[job_index, track_index], selected
+            )
+    return expected
+
+
+def test_batched_memory_selection_matches_legacy_lengths_padding_ties_and_no_memory_variant():
+    torch.manual_seed(81)
+    model = BeeTrackQuery(4, 8, 2, 0.0).eval()
+    queries = torch.randn(3, 3, 8)
+
+    def track(identifier: int, length: int, *, tied: bool = False) -> QueryTrack:
+        tokens = [torch.full((8,), float(index if not tied else 1)) for index in range(length)]
+        return QueryTrack(
+            identifier, queries[0, 0].clone(), torch.ones(4), 1,
+            memory=deque(tokens),
+        )
+
+    tracks = [
+        [track(1, 1), track(2, 2), track(3, 3, tied=True)],
+        [track(4, 4), track(5, 1), track(6, 0)],
+        [track(7, 2), track(8, 1)],
+    ]
+    use_memory = [True, True, False]
+    expected = _legacy_memory_read(model, queries, tracks, use_memory, 2)
+    actual = _batched_memory_read(model, queries, tracks, [3, 3, 2], 2, use_memory)
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-6)
+    assert torch.equal(actual[2], queries[2])  # persistent_query_no_memory
+    assert torch.equal(actual[1, 2], queries[1, 2])  # empty memory remains a query
+    assert torch.isfinite(actual).all()
+
+
+def test_batched_independent_sequences_match_single_sequence_and_emit_live_callbacks():
+    config = load_config(ROOT / "configs" / "h5_smoke.example.yaml")
+    assert config.h5 is not None
+    first = [_observation(frame, identity, 10 if identity == 1 else 55) for frame in range(1, 6) for identity in (1, 2)]
+    second = [
+        replace(_observation(frame, identity, 20 if identity == 1 else 62), video_id="other")
+        for frame in range(1, 6)
+        for identity in (1,)
+    ]
+    def embeddings_for(items: list[Observation]) -> np.ndarray:
+        values = np.asarray([[1.0, item.center_x / 100.0, item.center_y / 100.0, 0.2] for item in items], dtype=np.float32)
+        return values / np.linalg.norm(values, axis=1, keepdims=True)
+    first_embeddings = embeddings_for(first)
+    second_embeddings = embeddings_for(second)
+    model = BeeTrackQuery(4, 128, 4, 0.0).eval()
+    serial_first = track_sequence("m", H5_PRIMARY_VARIANT, model, first, first_embeddings, config.h5, torch.device("cpu"))
+    serial_second = track_sequence("m", "persistent_query_no_memory", model, second, second_embeddings, config.h5, torch.device("cpu"))
+    events: list[dict[str, object]] = []
+    completed: dict[int, list[dict[str, object]]] = {}
+    batched = track_sequences_batched(
+        model,
+        [
+            ("m", H5_PRIMARY_VARIANT, first, first_embeddings),
+            ("m", "persistent_query_no_memory", second, second_embeddings),
+        ],
+        config.h5,
+        torch.device("cpu"),
+        batch_size=2,
+        progress_interval_frames=2,
+        progress_callback=events.append,
+        job_completed_callback=lambda index, rows: completed.setdefault(index, rows),
+    )
+    for expected, actual in zip((serial_first, serial_second), batched):
+        assert _rows_without_float_noise(expected) == _rows_without_float_noise(actual)
+        assert np.allclose(
+            [float(row["association_score"]) for row in expected if row["association_score"] != ""],
+            [float(row["association_score"]) for row in actual if row["association_score"] != ""],
+            atol=1e-6,
+            rtol=1e-6,
+        )
+        assert np.allclose(
+            [float(row["reliability"]) for row in expected if row["reliability"] != ""],
+            [float(row["reliability"]) for row in actual if row["reliability"] != ""],
+            atol=1e-6,
+            rtol=1e-6,
+        )
+    assert sorted(completed) == [0, 1]
+    assert [len(completed[index]) for index in sorted(completed)] == [10, 5]
+    assert events and {"model", "video_id", "variant", "frame", "completed_frames", "total_frames"} <= events[-1].keys()
+    assert [int(event["completed_frames"]) for event in events] == sorted(
+        int(event["completed_frames"]) for event in events
+    )
+    queries = torch.randn(2, 3, 128)
+    memory = torch.zeros(2, 3, 2, 128)
+    all_masked = torch.ones(2, 3, 2, dtype=torch.bool)
+    assert torch.isfinite(model.read_memory_batched(queries, memory, all_masked)).all()
+
+
+def test_h5_tracking_job_cache_requires_exact_signature_and_complete_atomic_rows(tmp_path):
+    config = load_config(ROOT / "configs" / "h5_smoke.example.yaml")
+    assert config.h5 is not None
+    audit = {
+        "h5_protocol_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+        "project_split_sha256": "c" * 64,
+    }
+    inputs = H5Inputs(H3Inputs((), {}, {}, audit), audit)
+    observation_ids = ["validation:v:000001:1", "validation:v:000002:1"]
+    signature = _tracking_signature(
+        config,
+        inputs,
+        model_name="resnet50",
+        video_id="v",
+        variant=H5_PRIMARY_VARIANT,
+        observation_ids=observation_ids,
+        cache_fingerprint="cache-a",
+        checkpoint_sha256="d" * 64,
+    )
+    fingerprint = _tracking_fingerprint(signature)
+    path = tmp_path / "h5_work" / "tracking" / "resnet50" / H5_PRIMARY_VARIANT / "v.json"
+    rows = [
+        {"model": "resnet50", "video_id": "v", "variant": H5_PRIMARY_VARIANT, "observation_id": identifier}
+        for identifier in observation_ids
+    ]
+    atomic_write_json(path, {
+        "status": "completed", "fingerprint": fingerprint, "signature": signature,
+        "rows": rows, "rows_sha256": _tracking_rows_digest(rows), "final_test_read": False,
+    })
+    assert _load_tracking_job(path, fingerprint, model_name="resnet50", video_id="v", variant=H5_PRIMARY_VARIANT, observation_ids=observation_ids) is not None
+    changed = {**signature, "checkpoint_sha256": "e" * 64}
+    assert _load_tracking_job(path, _tracking_fingerprint(changed), model_name="resnet50", video_id="v", variant=H5_PRIMARY_VARIANT, observation_ids=observation_ids) is None
+    changed_batch = {**signature, "runtime": {**signature["runtime"], "batch_size": 99}}
+    assert _load_tracking_job(path, _tracking_fingerprint(changed_batch), model_name="resnet50", video_id="v", variant=H5_PRIMARY_VARIANT, observation_ids=observation_ids) is None
+    modified_rows = [{**row, "predicted_track_id": index + 100} for index, row in enumerate(rows)]
+    atomic_write_json(path, {
+        "status": "completed", "fingerprint": fingerprint, "signature": signature,
+        "rows": modified_rows, "rows_sha256": _tracking_rows_digest(rows), "final_test_read": False,
+    })
+    assert _load_tracking_job(path, fingerprint, model_name="resnet50", video_id="v", variant=H5_PRIMARY_VARIANT, observation_ids=observation_ids) is None
+    atomic_write_json(path, {"status": "running", "fingerprint": fingerprint, "rows": rows[:1], "final_test_read": False})
+    assert _load_tracking_job(path, fingerprint, model_name="resnet50", video_id="v", variant=H5_PRIMARY_VARIANT, observation_ids=observation_ids) is None
+
+
+def test_track_h5_reuses_completed_atomic_jobs_and_writes_progress(tmp_path, monkeypatch):
+    config = load_config(ROOT / "configs" / "h5_smoke.example.yaml")
+    assert config.h5 is not None
+    configured = replace(
+        config,
+        paths=replace(config.paths, output_root=tmp_path / "h5-output"),
+        runtime=replace(config.runtime, device="cpu", amp=False, batch_size=6),
+    )
+    def video_observation(video_id: str, frame: int, identity: int) -> Observation:
+        item = _observation(frame, identity, 10 if identity == 1 else 55)
+        return replace(
+            item,
+            video_id=video_id,
+            observation_id=f"validation:{video_id}:{frame:06d}:{identity}",
+            identity=f"{video_id}:{identity}",
+            image_path=f"train/{video_id}/img1/{frame:06d}.jpg",
+        )
+    observations = tuple(
+        video_observation(video_id, frame, identity)
+        for video_id in ("v", "other")
+        for frame in range(1, 4)
+        for identity in (1, 2)
+    )
+    assert len({item.observation_id for item in observations}) == len(observations)
+    assert len({item.identity for item in observations}) == 4
+    audit = {
+        "h5_protocol_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+        "project_split_sha256": "c" * 64,
+    }
+    inputs = H5Inputs(
+        H3Inputs(
+            observations,
+            {item.observation_id: "development_validation" for item in observations},
+            {"project_train": ("fit",), "development_validation": ("v", "other"), "final_test": ("test",)},
+            audit,
+        ),
+        audit,
+    )
+    embeddings = np.asarray(
+        [[1.0, item.center_x / 100.0, item.center_y / 100.0, 0.2] for item in observations],
+        dtype=np.float32,
+    )
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    model = BeeTrackQuery(4, configured.h5.hidden_dim, configured.h5.num_heads, 0.0).eval()
+    by_video = {
+        video_id: [index for index, item in enumerate(observations) if item.video_id == video_id]
+        for video_id in ("v", "other")
+    }
+    baseline: list[dict[str, object]] = []
+    for indices in by_video.values():
+        rows = track_sequence(
+            "m", "persistent_query_no_memory", model,
+            [observations[index] for index in indices], embeddings[indices], configured.h5, torch.device("cpu"),
+        )
+        for row in rows:
+            row["variant"] = "frozen_h3_baseline"
+        baseline.extend(rows)
+    monkeypatch.setattr(h5_experiment, "validate_h5_inputs", lambda _config: inputs)
+    monkeypatch.setattr(h5_experiment, "load_h5_source_embeddings", lambda _config, _model, _inputs: (embeddings, {"cache_fingerprint": "cache-test"}))
+    monkeypatch.setattr(h5_experiment, "_load_model", lambda _config, _model, _dimension: model)
+    monkeypatch.setattr(h5_experiment, "_baseline_rows", lambda _config, _model, _ids: list(baseline))
+    recorded_progress: list[int] = []
+    original_atomic_write_json = h5_experiment.atomic_write_json
+    def capture_progress(path, payload):
+        if path.name == "tracking_progress.json":
+            recorded_progress.append(int(payload["completed_frames"]))
+        original_atomic_write_json(path, payload)
+    monkeypatch.setattr(h5_experiment, "atomic_write_json", capture_progress)
+    checkpoint = configured.paths.output_root / "h5_checkpoints" / "m" / "final.pt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), checkpoint)
+    first = track_h5(configured, ["m"])
+    assert recorded_progress == sorted(recorded_progress)
+    assert recorded_progress[-1] == 18
+    recorded_progress.clear()
+    second = track_h5(configured, ["m"])
+    assert recorded_progress == sorted(recorded_progress)
+    assert first["reused_job_count"] == 0
+    assert second["reused_job_count"] == 6
+    assert len(list((configured.paths.output_root / "h5_work" / "tracking" / "m").rglob("*.json"))) == 6
+    progress = json.loads((configured.paths.output_root / "h5_logs" / "tracking_progress.json").read_text(encoding="utf-8"))
+    assert progress["status"] == "completed"
+    assert progress["completed_jobs"] == progress["total_jobs"] == 6
+    assert progress["final_test_read"] is False
+
+
+def test_h5_monitor_exposes_tracking_progress_contract():
+    monitor = (ROOT / "scripts" / "monitor_h5.sh").read_text(encoding="utf-8")
+    for value in (
+        "tracking_progress.json", "completed_jobs", "total_jobs", "completed_frames",
+        "total_frames", "eta_seconds", "tracking / reporting",
+    ):
+        assert value in monitor
+    for name in ("run_h5.sh", "resume_h5.sh", "monitor_h5.sh"):
+        script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert 'CPU_THREAD_DEFAULT="${BEEID_H5_CPU_THREADS:-16}"' in script
+        assert '[[ ! "${CPU_THREAD_DEFAULT}" =~ ^[1-9][0-9]*$ ]]' in script
+        assert "BEEID_H5_CPU_THREADS must be a positive integer when set." in script

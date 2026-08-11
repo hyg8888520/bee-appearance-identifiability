@@ -22,3 +22,6 @@ H4 does not vendor or import code from the papers below. They are recorded to pr
 - [MeMOTR (ICCV 2023)](https://openaccess.thecvf.com/content/ICCV2023/html/Gao_MeMOTR_Long-Term_Memory-Augmented_Transformer_for_Multi-Object_Tracking_ICCV_2023_paper.html)
 - [Robust Multi-Object Tracking by Marginal Inference (ECCV 2022)](https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/317_ECCV_2022_paper.php)
 - [U2MOT (ICCV 2023)](https://openaccess.thecvf.com/content/ICCV2023/html/Liu_Uncertainty-Aware_Unsupervised_Multi-Object_Tracking_ICCV_2023_paper.html)
+# H5 prior-art addition
+
+DETRAM（ECCV 2026，arXiv:2607.09089）仅作为 H5 方法边界参考，不是运行依赖，也未复制其源码。BeeTrackQuery 借鉴 persistent tracking queries（持久跟踪查询）、current-frame query refresh（当前帧查询刷新）和有限 temporal memory（时序记忆）；这些思想不作为独占创新声明。H5 的研究问题限定为 BEE24 外观同质目标的身份状态分离、记忆污染控制和可信度校准。
