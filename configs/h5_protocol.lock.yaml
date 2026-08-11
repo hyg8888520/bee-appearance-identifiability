@@ -1,0 +1,67 @@
+schema_version: 1
+protocol_id: bee24-h5-beetrackquery-development-v1
+status: FROZEN_DEVELOPMENT
+identity_definition: [video_id, track_id]
+project_split:
+  path: configs/splits/project_split.yaml
+  fit_partition: project_train
+  evaluation_partition: development_validation
+  final_test_access: false
+  video_isolation: true
+source_h3:
+  protocol_sha256: 747c4e6d30de698466140d299b4d1b37e5585b805c461e4e5eceb1291037bd19
+  required_status: completed_development_gt_boxes
+  reuse_policy: read_only_frozen_feature_cache_and_baseline_assignments
+  feature_reextraction: false
+model_policy:
+  frozen_backbones: [resnet50, dinov3]
+  official_topic_agw: REFERENCE_ONLY_NOT_A_METHOD_COMPONENT
+  trainable_component: BeeTrackQuery_association_head_only
+beetrackquery:
+  hidden_dim: 128
+  num_heads: 4
+  clip_length: 4
+  memory_slots: 4
+  memory_top_k: 2
+  dropout: 0.1
+  epochs: 12
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  max_train_clips_per_video: 256
+  train_clip_stride: 2
+  reliability_loss_weight: 0.25
+  update_gate: 0.70
+  memory_mix: 0.25
+  max_age: 25
+  min_assignment_score: 0.50
+  max_normalized_distance: 4.0
+  training_identity_use: supervised_project_train_only
+  inference_identity_use: forbidden
+association_variants:
+  - frozen_h3_baseline
+  - persistent_query_no_memory
+  - beetrackquery_short_memory
+  - beetrackquery_gated_memory
+primary_variant: beetrackquery_gated_memory
+metrics:
+  primary: [AssA, IDF1, IDSW, HOTA]
+  reliability: [brier_score, ece_10_bin]
+  aggregation: [micro_pooled, per_video, video_macro_mean_population_std]
+selection_gate:
+  noninferiority_tolerance: 0.002
+  min_nonharmed_videos: 4
+  require_idsw_reduction_each_backbone: true
+  require_idf1_and_hota_noninferiority_each_backbone: true
+final_test:
+  access: false
+  runs_allowed_in_h5_development: 0
+  fixed_detector_validation_required_before_freeze: true
+claims:
+  allowed:
+    - supervised_persistent_identity_query_results_on_development_gt_boxes
+    - short_memory_and_selective_update_ablation_on_frozen_backbones
+  forbidden:
+    - persistent_queries_or_transformer_memory_are_novel_by_themselves
+    - gt_box_results_are_end_to_end_mot_results
+    - development_results_are_final_test_results
+    - topic_is_a_component_of_beetrackquery
