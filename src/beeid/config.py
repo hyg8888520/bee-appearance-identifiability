@@ -205,6 +205,8 @@ class H5Config:
     weight_decay: float
     max_train_clips_per_video: int
     train_clip_stride: int
+    max_pair_elements_per_batch: int
+    checkpoint_interval_batches: int
     reliability_loss_weight: float
     update_gate: float
     memory_mix: float
@@ -1118,6 +1120,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
                 "hidden_dim", "num_heads", "clip_length", "memory_slots", "memory_top_k",
                 "dropout", "epochs", "learning_rate", "weight_decay",
                 "max_train_clips_per_video", "train_clip_stride",
+                "max_pair_elements_per_batch", "checkpoint_interval_batches",
                 "reliability_loss_weight", "update_gate", "memory_mix", "max_age",
                 "min_assignment_score", "max_normalized_distance",
                 "noninferiority_tolerance", "min_nonharmed_videos", "bootstrap_replicates",
@@ -1161,6 +1164,8 @@ def load_config(path: str | Path) -> ExperimentConfig:
             weight_decay=_bounded_float(_require(value, "weight_decay", "h5"), "h5.weight_decay", 0.0, 1.0),
             max_train_clips_per_video=_positive_int(_require(value, "max_train_clips_per_video", "h5"), "h5.max_train_clips_per_video"),
             train_clip_stride=_positive_int(_require(value, "train_clip_stride", "h5"), "h5.train_clip_stride"),
+            max_pair_elements_per_batch=_positive_int(value.get("max_pair_elements_per_batch", 262144), "h5.max_pair_elements_per_batch"),
+            checkpoint_interval_batches=_positive_int(value.get("checkpoint_interval_batches", 25), "h5.checkpoint_interval_batches"),
             reliability_loss_weight=_bounded_float(_require(value, "reliability_loss_weight", "h5"), "h5.reliability_loss_weight", 0.0, 10.0),
             update_gate=_bounded_float(_require(value, "update_gate", "h5"), "h5.update_gate", 0.0, 1.0),
             memory_mix=_bounded_float(_require(value, "memory_mix", "h5"), "h5.memory_mix", 0.0, 1.0),

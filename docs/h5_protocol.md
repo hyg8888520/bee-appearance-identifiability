@@ -23,8 +23,14 @@ BeeTrackQuery 将每个活动轨迹表示成 persistent track query（持久跟�
 
 主指标是 AssA（关联准确率）、IDF1（身份 F1）、IDSW（身份切换）与 HOTA。在 GT-box 阶段 DetA=1 是构造结果，不能解释成检测器性能。可信度另报 Brier score（概率均方误差）和 ECE（期望校准误差）。
 
+## 训练执行约束
+
+监督样本仍由长度为 4、步长为 2 的连续帧 clip（片段）产生，但实现会把其中的相邻帧 transition（转移样本）展平，再做带 padding（补齐）的批量训练。`runtime.batch_size` 限制 transition 数，`max_pair_elements_per_batch=262144` 同时限制批内 `batch × query × detection` 的上界，以免拥挤帧造成显存峰值。该优化不改变数据分区、身份标签来源、冻结 backbone 或 final-test 门禁，但会改变 optimizer step（优化器更新）的粒度，因此实现指纹独立标为 `beeid.h5:v2-batched-transitions`，不得续用 v1 的部分训练断点。
+
+压缩 H3 shards（分片）只在首次运行时严格核验并扫描一次；按 H5 observation 顺序生成的连续 `.npy` 只写入仓库外 `output_root/h5_embedding_cache/`。后续训练与跟踪按 fingerprint（指纹）复用该文件，不重新提取特征。训练每 25 个 batch 和每个 epoch（轮次）边界原子保存断点，每个 batch 更新可监控的进度 JSON。
+
 ## development gate
 
 两个 backbone 都必须满足：primary 的 IDF1 与 HOTA 相对 baseline 不劣超过 0.002；IDSW 严格减少；至少 4 个 development 视频不受损。未通过则输出 `STOP_OR_REVISE_BEETRACKQUERY`，不解锁 final test。
 
-完整机器可读协议与 SHA-256 分别在 `configs/h5_protocol.lock.yaml` 和 `configs/h5_protocol.lock.sha256`。
+完整机器可读协议与 SHA-256 分别在 `configs/h5_protocol.lock.yaml` 和 `configs/h5_protocol.lock.sha256`。由于 v2 改变了优化器更新粒度，协议 ID 已显式升级，不能把 v1 未完成运行与 v2 结果混合报告。

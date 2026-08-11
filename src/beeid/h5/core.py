@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +15,7 @@ import numpy as np
 from ..cache import open_cache
 from ..config import ExperimentConfig, H5Config
 from ..h3.core import H3Inputs, validate_h3_inputs
-from ..utils import sha256_file
+from ..utils import atomic_write_json, canonical_json, sha256_file, sha256_text
 from .protocol import validate_h5_protocol
 
 
@@ -51,6 +54,8 @@ def validate_h5_inputs(config: ExperimentConfig) -> H5Inputs:
         "weight_decay": h5.weight_decay,
         "max_train_clips_per_video": h5.max_train_clips_per_video,
         "train_clip_stride": h5.train_clip_stride,
+        "max_pair_elements_per_batch": h5.max_pair_elements_per_batch,
+        "checkpoint_interval_batches": h5.checkpoint_interval_batches,
         "reliability_loss_weight": h5.reliability_loss_weight,
         "update_gate": h5.update_gate, "memory_mix": h5.memory_mix,
         "max_age": h5.max_age, "min_assignment_score": h5.min_assignment_score,
@@ -134,9 +139,49 @@ def load_h5_source_embeddings(
             f"H3 source cache signature mismatch for {model_name}: " + ", ".join(mismatches)
         )
     required_ids = [item.observation_id for item in selected.h3_inputs.observations]
-    required = set(required_ids)
-    found: dict[str, np.ndarray] = {}
-    for shard_path in sorted(cache.directory.glob("shard-*.npz")):
+    required_position = {identifier: index for index, identifier in enumerate(required_ids)}
+    if len(required_position) != len(required_ids):
+        raise H5InputError("Selected H5 observations contain duplicate observation IDs")
+    selection_fingerprint = sha256_text(canonical_json({
+        "format_version": 1,
+        "source_cache_fingerprint": cache.fingerprint,
+        "observation_ids_sha256": sha256_text("\n".join(required_ids)),
+        "observation_count": len(required_ids),
+    }))
+    aligned_root = config.paths.output_root / "h5_embedding_cache"
+    aligned_root.mkdir(parents=True, exist_ok=True)
+    aligned_path = aligned_root / f"{model_name}-{selection_fingerprint}.npy"
+    aligned_metadata_path = aligned_root / f"{model_name}-{selection_fingerprint}.json"
+    if aligned_path.is_file() and aligned_metadata_path.is_file():
+        aligned_metadata = json.loads(aligned_metadata_path.read_text(encoding="utf-8"))
+        if (
+            aligned_metadata.get("fingerprint") == selection_fingerprint
+            and aligned_metadata.get("source_cache_fingerprint") == cache.fingerprint
+            and aligned_metadata.get("observation_count") == len(required_ids)
+        ):
+            values = np.load(aligned_path, mmap_mode="r", allow_pickle=False)
+            if values.ndim == 2 and values.shape[0] == len(required_ids) and values.dtype == np.float32:
+                return values, {
+                    "cache_fingerprint": cache.fingerprint,
+                    "cache_directory": str(cache.directory),
+                    "aligned_cache": str(aligned_path),
+                    "aligned_cache_status": "reused",
+                    "read_only": True,
+                    "feature_reextraction": False,
+                    "source_cache_observation_scope": "superset_allowed_after_strict_provenance_validation",
+                    "selected_observation_count": len(required_ids),
+                }
+
+    shard_paths = sorted(cache.directory.glob("shard-*.npz"))
+    if not shard_paths:
+        raise H5InputError(f"H3 cache has no shards: {cache.directory}")
+    progress_path = config.paths.output_root / "h5_logs" / f"{model_name}_cache_progress.json"
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = aligned_path.with_name(f".{aligned_path.name}.{uuid.uuid4().hex}.tmp")
+    values: np.memmap | None = None
+    found = np.zeros(len(required_ids), dtype=bool)
+    embedding_dim: int | None = None
+    for shard_index, shard_path in enumerate(shard_paths, start=1):
         try:
             with np.load(shard_path, allow_pickle=False) as shard:
                 identifiers = shard["observation_ids"].astype(str).tolist()
@@ -149,22 +194,75 @@ def load_h5_source_embeddings(
             np.linalg.norm(embeddings, axis=1), 1.0, atol=1e-4, rtol=1e-4
         ):
             raise H5InputError(f"Invalid or non-normalized H3 embeddings: {shard_path}")
+        if values is None:
+            embedding_dim = int(embeddings.shape[1])
+            values = np.lib.format.open_memmap(
+                temporary_path, mode="w+", dtype=np.float32,
+                shape=(len(required_ids), embedding_dim),
+            )
+        elif embeddings.shape[1] != embedding_dim:
+            raise H5InputError(f"Inconsistent H3 embedding dimension: {shard_path}")
         for identifier, embedding in zip(identifiers, embeddings):
-            if identifier not in required:
+            position = required_position.get(identifier)
+            if position is None:
                 continue
-            if identifier in found:
+            if found[position]:
                 raise H5InputError(f"Duplicate observation in H3 cache: {identifier}")
-            found[identifier] = embedding.copy()
-    missing = [identifier for identifier in required_ids if identifier not in found]
+            assert values is not None
+            values[position] = embedding
+            found[position] = True
+        if shard_index == 1 or shard_index % 10 == 0 or shard_index == len(shard_paths):
+            atomic_write_json(progress_path, {
+                "status": "scanning" if shard_index < len(shard_paths) else "scan_completed",
+                "model": model_name,
+                "scanned_shards": shard_index,
+                "total_shards": len(shard_paths),
+                "found_observations": int(found.sum()),
+                "required_observations": len(required_ids),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "final_test_read": False,
+            })
+    missing = [required_ids[index] for index in np.flatnonzero(~found)]
     if missing:
+        if values is not None:
+            del values
+        temporary_path.unlink(missing_ok=True)
         preview = ", ".join(missing[:5])
         raise H5InputError(
             f"H3 cache {model_name} is missing {len(missing)} selected observations: {preview}"
         )
-    values = np.stack([found[identifier] for identifier in required_ids]).astype(np.float32)
-    return values, {
+    assert values is not None and embedding_dim is not None
+    values.flush()
+    del values
+    os.replace(temporary_path, aligned_path)
+    atomic_write_json(aligned_metadata_path, {
+        "format_version": 1,
+        "fingerprint": selection_fingerprint,
+        "source_cache_fingerprint": cache.fingerprint,
+        "source_cache_directory": str(cache.directory),
+        "observation_count": len(required_ids),
+        "embedding_dim": embedding_dim,
+        "dtype": "float32",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "final_test_read": False,
+    })
+    atomic_write_json(progress_path, {
+        "status": "completed",
+        "model": model_name,
+        "scanned_shards": len(shard_paths),
+        "total_shards": len(shard_paths),
+        "found_observations": int(found.sum()),
+        "required_observations": len(required_ids),
+        "aligned_cache": str(aligned_path),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "final_test_read": False,
+    })
+    values_array = np.load(aligned_path, mmap_mode="r", allow_pickle=False)
+    return values_array, {
         "cache_fingerprint": cache.fingerprint,
         "cache_directory": str(cache.directory),
+        "aligned_cache": str(aligned_path),
+        "aligned_cache_status": "built",
         "read_only": True,
         "feature_reextraction": False,
         "source_cache_observation_scope": "superset_allowed_after_strict_provenance_validation",
