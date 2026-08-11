@@ -35,7 +35,12 @@ only `development_validation`. Final test is never read or unlocked.
    memory selection, reliability gate, and track creation semantics. GT identity is absent from every
    inference decision; it is attached only after decisions for metric/audit labels. Replay jobs use
    diagnostic schema v2, and the completed assignments must match the hashed source H5 assignments
-   observation-by-observation before any result is reported.
+   observation-by-observation before any result is reported. Numeric replay equivalence uses an
+   absolute tolerance of `5e-6` (with relative tolerance `1e-6`), set from the RTX server's measured
+   `2.81e-6` maximum absolute difference plus safety margin. This accommodates floating-point
+   execution-order variation only: identity and update decisions remain exactly equal, missing or
+   non-finite values remain invalid, and a difference outside tolerance still fails closed. It is not
+   tolerance for approximate assignment decisions.
 4. Every observation receives one exhaustive rejection reason: `matched`, `no_active_track`,
    `no_motion_valid_candidate`, `score_below_threshold`, or `assignment_conflict`. Candidate samples
    are bounded, while candidate counts and reason totals remain complete.
