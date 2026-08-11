@@ -48,6 +48,24 @@ class BeeTrackQuery(nn.Module):
         )
         return self.frame_norm(queries + attended.squeeze(0))
 
+    def refresh_batched(
+        self,
+        queries: torch.Tensor,
+        detections: torch.Tensor,
+        detection_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Refresh padded transition queries in one attention kernel."""
+        if queries.numel() == 0 or detections.numel() == 0:
+            return queries
+        attended, _ = self.frame_attention(
+            queries,
+            detections,
+            detections,
+            key_padding_mask=detection_padding_mask,
+            need_weights=False,
+        )
+        return self.frame_norm(queries + attended)
+
     def read_memory(self, query: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
         if memory.numel() == 0:
             return query
@@ -63,6 +81,18 @@ class BeeTrackQuery(nn.Module):
         q = queries[:, None, :].expand(-1, detections.shape[0], -1)
         d = detections[None, :, :].expand(queries.shape[0], -1, -1)
         return self.pair_head(torch.cat([q, d, torch.abs(q - d), geometry_delta], dim=-1)).squeeze(-1)
+
+    def pair_logits_batched(
+        self,
+        queries: torch.Tensor,
+        detections: torch.Tensor,
+        geometry_delta: torch.Tensor,
+    ) -> torch.Tensor:
+        """Score every padded query/detection pair for a transition batch."""
+        q = queries[:, :, None, :].expand(-1, -1, detections.shape[1], -1)
+        d = detections[:, None, :, :].expand(-1, queries.shape[1], -1, -1)
+        features = torch.cat([q, d, torch.abs(q - d), geometry_delta], dim=-1)
+        return self.pair_head(features).squeeze(-1)
 
     def reliability_logits(self, logits: torch.Tensor) -> torch.Tensor:
         if logits.shape[1] == 1:

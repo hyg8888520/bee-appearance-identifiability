@@ -60,6 +60,8 @@ h5:
   weight_decay: 0.0001
   max_train_clips_per_video: 256
   train_clip_stride: 2
+  max_pair_elements_per_batch: 262144
+  checkpoint_interval_batches: 25
   reliability_loss_weight: 0.25
   update_gate: 0.70
   memory_mix: 0.25
