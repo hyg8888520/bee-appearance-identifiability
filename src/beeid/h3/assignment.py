@@ -27,24 +27,22 @@ def _hungarian_min(cost: np.ndarray) -> list[tuple[int, int]]:
         while True:
             used[column] = True
             active_row = int(p[column])
-            delta = np.inf
-            next_column = 0
-            for candidate in range(1, size + 1):
-                if used[candidate]:
-                    continue
-                current = values[active_row - 1, candidate - 1] - u[active_row] - v[candidate]
-                if current < min_value[candidate]:
-                    min_value[candidate] = current
-                    way[candidate] = column
-                if min_value[candidate] < delta:
-                    delta = min_value[candidate]
-                    next_column = candidate
-            for candidate in range(size + 1):
-                if used[candidate]:
-                    u[p[candidate]] += delta
-                    v[candidate] -= delta
-                else:
-                    min_value[candidate] -= delta
+            # This is the same Hungarian update as the former scalar inner
+            # loops.  Vectorising candidate scans removes the Python hot path
+            # while ``argmin`` preserves the prior first-column tie rule.
+            available = ~used[1:]
+            current = values[active_row - 1] - u[active_row] - v[1:]
+            better = available & (current < min_value[1:])
+            min_value[1:][better] = current[better]
+            way[1:][better] = column
+            candidates = np.where(available, min_value[1:], np.inf)
+            next_offset = int(np.argmin(candidates))
+            delta = float(candidates[next_offset])
+            next_column = next_offset + 1
+            used_rows = p[used]
+            u[used_rows] += delta
+            v[used] -= delta
+            min_value[1:][available] -= delta
             column = next_column
             if p[column] == 0:
                 break

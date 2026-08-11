@@ -75,6 +75,40 @@ class BeeTrackQuery(nn.Module):
         )
         return self.memory_norm(query + attended.reshape(-1))
 
+    def read_memory_batched(
+        self,
+        queries: torch.Tensor,
+        memory: torch.Tensor,
+        memory_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Read padded per-query memories in one attention invocation.
+
+        ``queries`` is ``[jobs, queries, hidden]`` and ``memory`` is
+        ``[jobs, queries, slots, hidden]``.  Flattening only independent query
+        reads does not share memory or alter temporal tracker state.
+        """
+        if queries.numel() == 0 or memory.numel() == 0:
+            return queries
+        jobs, query_count, hidden = queries.shape
+        slots = memory.shape[2]
+        flat_queries = queries.reshape(jobs * query_count, 1, hidden)
+        flat_memory = memory.reshape(jobs * query_count, slots, hidden).clone()
+        flat_mask = memory_padding_mask.reshape(jobs * query_count, slots).clone()
+        # Guard callers against NaNs from an all-masked MultiheadAttention
+        # row.  Padding-query outputs are ignored by the tracker, but keeping
+        # them finite is essential because they share a batched kernel.
+        fully_masked = flat_mask.all(dim=1)
+        flat_memory[fully_masked, 0] = flat_queries[fully_masked, 0]
+        flat_mask[fully_masked, 0] = False
+        attended, _ = self.memory_attention(
+            flat_queries,
+            flat_memory,
+            flat_memory,
+            key_padding_mask=flat_mask,
+            need_weights=False,
+        )
+        return self.memory_norm(queries + attended.reshape(jobs, query_count, hidden))
+
     def pair_logits(
         self, queries: torch.Tensor, detections: torch.Tensor, geometry_delta: torch.Tensor
     ) -> torch.Tensor:

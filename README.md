@@ -14,6 +14,8 @@ cp configs/h5.local.yaml.example configs/h5.local.yaml
 bash scripts/run_h5.sh configs/h5.local.yaml ~/venvs/beeid-dino/bin/python
 ```
 
+H5 tracker v4 batches one causally-ready frame from independent `video × variant` jobs on the GPU, vectorizes the motion-validity matrix, batches short-memory selection, and writes every completed job atomically under `h5_work/tracking/`. Cache reuse requires the model checkpoint SHA-256, H5 protocol, manifest/project split, aligned source-cache fingerprint, observation IDs, variant/video, tracking parameters, runtime batch/dtype details, a canonical row digest, and tracker implementation to match exactly. `h5_logs/tracking_progress.json` records monotonic job/frame progress and ETA; an interrupted current job is recomputed, while completed matching jobs are reused. This is execution-only: it does not change the tracking protocol or use GT identity in inference decisions.
+
 H5 v2 使用带 padding 的 transition batch，每 25 个 batch 原子保存 epoch 内断点，并把只读压缩 H3 shards 转为仓库外 H5 输出目录中的可复用对齐 `.npy`。可在另一个终端运行 `bash scripts/monitor_h5.sh configs/h5.local.yaml ~/venvs/beeid-dino/bin/python 5` 监控。这些是执行优化：backbone、项目划分、训练身份来源和 final-test 门禁仍然冻结；由于 optimizer step 粒度变化，v2 使用新的协议 ID，不能与未完成的 v1 训练混合。
 
 详细定义见 [H5 protocol](docs/h5_protocol.md)、[method/novelty boundary](docs/h5_method_and_novelty.md) 和 [server deployment](docs/h5_server_deployment.md)。真实 RTX 4090、完整 BEE24 和 fixed-detector 验证当前均为 `SERVER_VALIDATION_PENDING`；GT-box 结果不是端到端 MOT。

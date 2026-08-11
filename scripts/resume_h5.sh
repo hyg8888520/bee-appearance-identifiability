@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+CPU_THREAD_DEFAULT="${BEEID_H5_CPU_THREADS:-16}"
+if [[ ! "${CPU_THREAD_DEFAULT}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "BEEID_H5_CPU_THREADS must be a positive integer when set." >&2
+  exit 2
+fi
 if [[ ! "${OMP_NUM_THREADS:-}" =~ ^[1-9][0-9]*$ ]]; then
-  export OMP_NUM_THREADS=4
+  export OMP_NUM_THREADS="${CPU_THREAD_DEFAULT}"
+fi
+if [[ ! "${MKL_NUM_THREADS:-}" =~ ^[1-9][0-9]*$ ]]; then
+  export MKL_NUM_THREADS="${OMP_NUM_THREADS}"
 fi
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
