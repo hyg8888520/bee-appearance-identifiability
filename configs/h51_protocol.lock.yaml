@@ -1,0 +1,61 @@
+schema_version: 1
+protocol_id: bee24-h51-closed-loop-diagnostic-development-v1
+status: FROZEN_POST_H5_DEVELOPMENT_DIAGNOSTIC
+design_timing: DEFINED_AFTER_H5_DEVELOPMENT_GATE_FAILED
+identity_definition: [video_id, track_id]
+project_split:
+  path: configs/splits/project_split.yaml
+  runtime_gradient_probe_partition: project_train
+  teacher_forced_offline_partition: development_validation
+  causal_rollout_partition: development_validation
+  metrics_partition: development_validation
+  final_test_access: false
+  final_test_runs_allowed: 0
+source_h5:
+  protocol_path: configs/h5_protocol.lock.yaml
+  protocol_checksum_path: configs/h5_protocol.lock.sha256
+  required_run_status: completed_development_gt_boxes
+  required_gate_status: STOP_OR_REVISE_BEETRACKQUERY
+  reuse_policy: read_only_final_checkpoints_metadata_and_assignments
+  retraining: forbidden
+  checkpoint_modification: forbidden
+source_h3:
+  reuse_policy: read_only_aligned_feature_cache_and_frozen_baseline
+  feature_reextraction: false
+diagnostics:
+  replay_diagnostic_schema_version: 2
+  gradient_coverage: runtime_forward_backward_on_h5_batched_transition_loss
+  gradient_health_ready_rule: all_trainable_parameters_grad_present_finite_and_nonzero
+  gradient_probe_data_use: project_train_transition_inputs_only
+  path_audit: runtime_hooks_plus_explicit_state_boundary_records
+  teacher_forced_one_step: development_validation_offline_gt_audit_only
+  causal_rollout_data_use: development_validation_only
+  max_teacher_forced_rows_full: 250000
+  max_teacher_forced_rows_subset_smoke: 10000
+  candidate_sample_per_observation: 3
+  causal_rollout_gt_identity_decision_input: forbidden
+  variants:
+    - persistent_query_no_memory
+    - beetrackquery_short_memory
+    - beetrackquery_gated_memory
+thresholds:
+  diagnostic_not_confirmatory: true
+  collapse_new_track_rate: 0.70
+  collapse_prediction_inflation: 2.00
+  gate_degeneracy_low: 0.05
+  gate_degeneracy_high: 0.95
+  min_gate_updates: 20
+  max_teacher_rollout_idf1_gap: 0.25
+decision:
+  ready: READY_FOR_H52_PROTOCOL_DESIGN
+  stop: STOP_H51_IMPLEMENTATION_NOT_READY
+  final_test_unlock: never
+claims:
+  allowed:
+    - post_hoc_development_failure_diagnosis
+    - teacher_forced_offline_audit_separated_from_deployable_rollout
+  forbidden:
+    - method_improvement
+    - checkpoint_retraining_or_threshold_rescue
+    - final_test_result
+    - gt_identity_as_inference_decision_input

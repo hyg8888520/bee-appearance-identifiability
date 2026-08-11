@@ -258,3 +258,23 @@ Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。CPU CI 也
 ## 解释限制
 
 GT-box H1 只衡量 appearance upper bound；H3 GT-box 虽然产生在线关联轨迹，仍没有 detector FP/FN，不能当成完整 MOT。背景可能泄漏视频、位置或场景信息；扩框会改变背景占比并可能偏向某些模型；Laplacian、方向和 GT-box IoU 只是清晰度、姿态和遮挡代理；development validation 来自 train 视频而非官方 validation。只有 fixed-detector development 方向稳定、全部 freeze gate 完成后，才允许一次 final-test evaluation。
+
+## H5.1 closed-loop diagnostics
+
+H5.1 diagnoses the failed H5 development GT-box run without retraining or changing either
+`final.pt`. It performs runtime gradient coverage, a separately labelled teacher-forced offline
+one-step audit, and instrumented causal replay of no-memory, short-memory, and gated-memory H5-v4
+semantics. It reuses only completed external H5 outputs and read-only H3 feature caches, writes to a
+new external output root, and never reads or unlocks final test.
+
+Start with `beeid h51-synthetic-smoke`, then a minimal two-video diagnostic containing one
+`project_train` video for runtime gradient-probe inputs and one `development_validation` video for
+teacher-forced audit and causal replay. Create that local smoke config from
+`configs/h51_smoke.example.yaml`; the full `configs/h51.example.yaml` intentionally has
+`allow_subset=false` and is only for the subsequent full development replay. See
+[the protocol](docs/h51_protocol.md) and
+[server deployment guide](docs/h51_server_deployment.md). `scripts/run_h51.sh`,
+`resume_h51.sh`, `h51_smoke_test.sh`, `monitor_h51.sh`, and `package_h51_results.sh` provide the
+Linux workflow. Synthetic success means the diagnostic correctly detects the known missing-memory-
+gradient defect; it does not mean BeeTrackQuery is method-ready. Real RTX 4090/BEE24 validation is
+`SERVER_VALIDATION_PENDING`.
