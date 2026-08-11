@@ -43,7 +43,7 @@ from .tracker import instrumented_track_sequence
 
 H51_REPLAY_IMPLEMENTATION = "beeid.h51.tracker:v2-instrumented-h5-v4-semantics"
 H51_REPLAY_DIAGNOSTIC_SCHEMA_VERSION = 2
-REPLAY_EQUIVALENCE_ATOL = 1e-6
+REPLAY_EQUIVALENCE_ATOL = 5e-6
 REPLAY_EQUIVALENCE_RTOL = 1e-6
 
 

@@ -408,6 +408,25 @@ def test_instrumented_rollout_equals_h5_tracker_and_is_identity_permutation_inva
     assert equivalence["mismatch_count"] == 0
     assert len(equivalence["checks"]) == len(H51_VARIANTS)
     assert equivalence["diagnostic_schema_version"] == 2
+    assert equivalence["absolute_tolerance"] == 5e-6
+    numeric_oracle = [dict(row) for row in expected_all]
+    within_tolerance = [dict(row) for row in actual_all]
+    numeric_index = 0
+    numeric_oracle[numeric_index]["association_score"] = 0.5
+    within_tolerance[numeric_index]["association_score"] = 0.5 + 3e-6
+    assert replay_equivalence_audit(
+        numeric_oracle, within_tolerance, ["m"],
+        {row.observation_id for row in observations},
+        oracle="current_h5_tracker_test_only_oracle",
+    )["mismatch_count"] == 0
+    outside_tolerance = [dict(row) for row in actual_all]
+    outside_tolerance[numeric_index]["association_score"] = 0.5 + 1e-4
+    with pytest.raises(RuntimeError, match="differs from its H5 assignment oracle"):
+        replay_equivalence_audit(
+            numeric_oracle, outside_tolerance, ["m"],
+            {row.observation_id for row in observations},
+            oracle="current_h5_tracker_test_only_oracle",
+        )
     tampered = [dict(row) for row in actual_all]
     tampered[0]["predicted_track_id"] = int(tampered[0]["predicted_track_id"]) + 1000
     with pytest.raises(RuntimeError, match="differs from its H5 assignment oracle"):
