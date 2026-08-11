@@ -63,3 +63,8 @@ research_prior_art:
     venue: ICCV 2023
     runtime_dependency: false
     purpose: Prior art boundary for uncertainty-aware MOT
+  detram:
+    url: https://arxiv.org/abs/2607.09089
+    venue: ECCV 2026
+    runtime_dependency: false
+    purpose: Prior art boundary for persistent tracking queries, current-frame query refresh, and finite temporal memory

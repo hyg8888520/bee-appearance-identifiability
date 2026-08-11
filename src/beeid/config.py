@@ -189,6 +189,34 @@ class H41Config:
 
 
 @dataclass(frozen=True)
+class H5Config:
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    hidden_dim: int
+    num_heads: int
+    clip_length: int
+    memory_slots: int
+    memory_top_k: int
+    dropout: float
+    epochs: int
+    learning_rate: float
+    weight_decay: float
+    max_train_clips_per_video: int
+    train_clip_stride: int
+    reliability_loss_weight: float
+    update_gate: float
+    memory_mix: float
+    max_age: int
+    min_assignment_score: float
+    max_normalized_distance: float
+    noninferiority_tolerance: float
+    min_nonharmed_videos: int
+    bootstrap_replicates: int
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -201,6 +229,7 @@ class ExperimentConfig:
     h3: H3Config | None
     h4: H4Config | None
     h41: H41Config | None
+    h5: H5Config | None
 
     @property
     def manifest_path(self) -> Path:
@@ -390,7 +419,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     root = _mapping(raw, "config")
     _keys(
         root,
-        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41"},
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5"},
         "config",
     )
     base = config_path.parent
@@ -1079,6 +1108,70 @@ def load_config(path: str | Path) -> ExperimentConfig:
             ),
         )
 
+    h5: H5Config | None = None
+    if "h5" in root and root["h5"] is not None:
+        value = _mapping(root["h5"], "h5")
+        _keys(
+            value,
+            {
+                "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+                "hidden_dim", "num_heads", "clip_length", "memory_slots", "memory_top_k",
+                "dropout", "epochs", "learning_rate", "weight_decay",
+                "max_train_clips_per_video", "train_clip_stride",
+                "reliability_loss_weight", "update_gate", "memory_mix", "max_age",
+                "min_assignment_score", "max_normalized_distance",
+                "noninferiority_tolerance", "min_nonharmed_videos", "bootstrap_replicates",
+            },
+            "h5",
+        )
+        if h3 is None:
+            raise ConfigurationError("h5 requires the frozen h3 section")
+        if paths.h1_output_root is None or paths.h3_output_root is None:
+            raise ConfigurationError("H5 requires paths.h1_output_root and paths.h3_output_root")
+        for label, source_root in (("H1", paths.h1_output_root), ("H3", paths.h3_output_root)):
+            if _paths_overlap(paths.output_root, source_root):
+                raise ConfigurationError(
+                    f"H5 output_root must not contain or be contained by the {label} source root"
+                )
+        if dataset.source_splits != ("train",) or protocol.evaluation_split != "validation":
+            raise ConfigurationError(
+                "H5 is restricted to project_train fitting and development_validation evaluation"
+            )
+        hidden_dim = _positive_int(_require(value, "hidden_dim", "h5"), "h5.hidden_dim")
+        num_heads = _positive_int(_require(value, "num_heads", "h5"), "h5.num_heads")
+        if hidden_dim % num_heads:
+            raise ConfigurationError("h5.hidden_dim must be divisible by h5.num_heads")
+        memory_slots = _positive_int(_require(value, "memory_slots", "h5"), "h5.memory_slots")
+        memory_top_k = _positive_int(_require(value, "memory_top_k", "h5"), "h5.memory_top_k")
+        if memory_top_k > memory_slots:
+            raise ConfigurationError("h5.memory_top_k cannot exceed h5.memory_slots")
+        h5 = H5Config(
+            protocol_lock_path=_path(_require(value, "protocol_lock", "h5"), base, "h5.protocol_lock"),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(_require(value, "protocol_checksum", "h5"), base, "h5.protocol_checksum"),  # type: ignore[arg-type]
+            project_split_path=_path(_require(value, "project_split", "h5"), base, "h5.project_split"),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h5"), "h5.allow_subset"),
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            clip_length=_positive_int(_require(value, "clip_length", "h5"), "h5.clip_length"),
+            memory_slots=memory_slots,
+            memory_top_k=memory_top_k,
+            dropout=_bounded_float(_require(value, "dropout", "h5"), "h5.dropout", 0.0, 0.9),
+            epochs=_positive_int(_require(value, "epochs", "h5"), "h5.epochs"),
+            learning_rate=_bounded_float(_require(value, "learning_rate", "h5"), "h5.learning_rate", 1e-8, 1.0),
+            weight_decay=_bounded_float(_require(value, "weight_decay", "h5"), "h5.weight_decay", 0.0, 1.0),
+            max_train_clips_per_video=_positive_int(_require(value, "max_train_clips_per_video", "h5"), "h5.max_train_clips_per_video"),
+            train_clip_stride=_positive_int(_require(value, "train_clip_stride", "h5"), "h5.train_clip_stride"),
+            reliability_loss_weight=_bounded_float(_require(value, "reliability_loss_weight", "h5"), "h5.reliability_loss_weight", 0.0, 10.0),
+            update_gate=_bounded_float(_require(value, "update_gate", "h5"), "h5.update_gate", 0.0, 1.0),
+            memory_mix=_bounded_float(_require(value, "memory_mix", "h5"), "h5.memory_mix", 0.0, 1.0),
+            max_age=_positive_int(_require(value, "max_age", "h5"), "h5.max_age"),
+            min_assignment_score=_bounded_float(_require(value, "min_assignment_score", "h5"), "h5.min_assignment_score", 0.0, 1.0),
+            max_normalized_distance=_bounded_float(_require(value, "max_normalized_distance", "h5"), "h5.max_normalized_distance", 0.01, 100.0),
+            noninferiority_tolerance=_bounded_float(_require(value, "noninferiority_tolerance", "h5"), "h5.noninferiority_tolerance", 0.0, 0.1),
+            min_nonharmed_videos=_positive_int(_require(value, "min_nonharmed_videos", "h5"), "h5.min_nonharmed_videos"),
+            bootstrap_replicates=_positive_int(_require(value, "bootstrap_replicates", "h5"), "h5.bootstrap_replicates"),
+        )
+
     return ExperimentConfig(
-        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5
     )

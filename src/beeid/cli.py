@@ -1,4 +1,4 @@
-"""Composable command-line interface for the BEE24 H1 through H4.1 experiments."""
+"""Composable command-line interface for the BEE24 H1 through H5 experiments."""
 
 from __future__ import annotations
 
@@ -54,11 +54,17 @@ from .h41.experiment import run_h41_tracking, run_h41_window_audit
 from .h41.protocol import validate_h41_protocol
 from .h41.report import generate_h41_report
 from .h41.synthetic import h41_synthetic_smoke
+from .h5 import H5_MODELS
+from .h5.core import validate_h5_inputs
+from .h5.experiment import run_h5_all, track_h5, train_h5
+from .h5.protocol import validate_h5_protocol
+from .h5.report import generate_h5_report
+from .h5.synthetic import h5_synthetic_smoke
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="beeid", description="BEE24 H1 appearance through H4.1 tracking experiments"
+        prog="beeid", description="BEE24 H1 appearance through H5 BeeTrackQuery experiments"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -227,6 +233,25 @@ def _parser() -> argparse.ArgumentParser:
         help="Run CPU-only H4.1 smoke with a preserved synthetic H4-v1 STOP",
     )
     h41_synthetic.add_argument("--output", type=Path)
+    h5_validate_protocol = subparsers.add_parser(
+        "h5-validate-protocol", help="Validate the frozen H5 BeeTrackQuery protocol"
+    )
+    h5_validate_protocol.add_argument("--protocol", type=Path, required=True)
+    h5_validate_protocol.add_argument("--checksum", type=Path)
+    configured("h5-validate", "Validate frozen H3 features and H5 split isolation")
+    h5_train = configured("h5-train", "Train or resume BeeTrackQuery heads on project_train")
+    h5_train.add_argument("--models", nargs="+", choices=H5_MODELS, required=True)
+    h5_track = configured("h5-track", "Evaluate BeeTrackQuery ablations on development GT boxes")
+    h5_track.add_argument("--models", nargs="+", choices=H5_MODELS, required=True)
+    h5_report = configured("h5-report", "Generate H5 metrics, calibration, decision and guide")
+    h5_report.add_argument("--models", nargs="+", choices=H5_MODELS, required=True)
+    h5_all = configured("h5-run-all", "Run the complete H5 development workflow")
+    h5_all.add_argument("--models", nargs="+", choices=H5_MODELS, default=list(H5_MODELS))
+    h5_all.add_argument("--confirm-full", action="store_true")
+    h5_synthetic = subparsers.add_parser(
+        "h5-synthetic-smoke", help="Run CPU-only BeeTrackQuery smoke with test-only features"
+    )
+    h5_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -426,12 +451,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h4_synthetic_smoke(arguments.output)
         elif arguments.command == "h41-synthetic-smoke":
             result = h41_synthetic_smoke(arguments.output)
+        elif arguments.command == "h5-synthetic-smoke":
+            result = h5_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h4-validate-protocol":
             result = validate_h4_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h41-validate-protocol":
             result = validate_h41_protocol(arguments.protocol, arguments.checksum)
+        elif arguments.command == "h5-validate-protocol":
+            result = validate_h5_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -557,6 +586,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     arguments.confirm_full,
                     arguments.override_audit_stop,
                 )
+            elif arguments.command == "h5-validate":
+                result = validate_h5_inputs(config).audit
+            elif arguments.command == "h5-train":
+                result = train_h5(config, arguments.models)
+            elif arguments.command == "h5-track":
+                result = track_h5(config, arguments.models)
+            elif arguments.command == "h5-report":
+                result = generate_h5_report(config, arguments.models)
+            elif arguments.command == "h5-run-all":
+                result = run_h5_all(config, arguments.models, arguments.confirm_full)
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

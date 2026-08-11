@@ -1,4 +1,20 @@
-# BEE24 H1–H4.1 Appearance Reliability and Adaptive Identity Tracking
+# BEE24 H1–H5 Appearance Reliability and Identity-State Tracking
+
+## H5：BeeTrackQuery 持久身份查询
+
+H5 从已经冻结的 H3 ResNet50 / DINOv3 crop embedding 出发，只在 `project_train` 训练小型身份关联头，并在 `development_validation` 比较冻结 H3 baseline、无记忆持久查询、无门控短记忆与带可信度门控短记忆。它不微调 backbone，不使用 TOPIC 模型，也不读取 final test。方法设计借鉴 DETR 系跟踪与 DETRAM 的 persistent tracking query（持久跟踪查询）、current-frame refresh（当前帧刷新）和 finite memory（有限记忆）；本项目的重点是蜜蜂同质外观下的 identity-state separation（身份状态分离）与 contamination-aware selective update（防污染选择性更新），不把既有 Transformer 结构本身宣称为创新。
+
+```bash
+cp configs/h5.local.yaml.example configs/h5.local.yaml
+~/venvs/beeid-dino/bin/python -m beeid.cli h5-validate-protocol \
+  --protocol configs/h5_protocol.lock.yaml \
+  --checksum configs/h5_protocol.lock.sha256
+~/venvs/beeid-dino/bin/python -m beeid.cli h5-synthetic-smoke \
+  --output ~/experiments/bee-appearance-identifiability/h5-synthetic
+bash scripts/run_h5.sh configs/h5.local.yaml ~/venvs/beeid-dino/bin/python
+```
+
+详细定义见 [H5 protocol](docs/h5_protocol.md)、[method/novelty boundary](docs/h5_method_and_novelty.md) 和 [server deployment](docs/h5_server_deployment.md)。真实 RTX 4090、完整 BEE24 和 fixed-detector 验证当前均为 `SERVER_VALIDATION_PENDING`；GT-box 结果不是端到端 MOT。
 
 ## H4.1：窗口可恢复性与自适应身份提交
 
