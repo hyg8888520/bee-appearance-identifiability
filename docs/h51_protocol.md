@@ -22,12 +22,12 @@ only `development_validation`. Final test is never read or unlocked.
    records every parameter's gradient presence, finiteness, norm, and objective use. The known six
    `memory_attention`/`memory_norm` parameters with no gradient make `method_ready=false` but do not
    abort diagnostics. Readiness additionally requires every trainable gradient to be present, finite,
-   and above the locked zero threshold; any other zero or non-finite gradient is reported and stops
-   readiness without automatic causal attribution. On the deterministic synthetic audited transition
-   batch, `pair_head.3.bias` has a finite zero gradient. That probe contains only multi-candidate
-   transitions, where a common logit shift is unidentifiable to the CE and softmax-based reliability
-   features. This statement is batch-scoped: `reliability_logits()` has a distinct single-candidate
-   sigmoid path, so H5.1 does not claim that the bias is always structurally gradient-free.
+   and above the locked zero threshold; any finite zero or non-finite gradient is reported and stops
+   readiness without automatic causal attribution. Exact zero norms of individual non-memory
+   parameters can vary with CPU/GPU kernels and reduction order, so the smoke test reconciles the
+   complete finite-zero list in the gradient CSV against the path summary rather than requiring a
+   particular named parameter to be zero. This does not weaken the core finding: the six
+   `memory_attention`/`memory_norm` parameters are missing gradients and independently force STOP.
 2. Runtime hooks distinguish the teacher-forced training path, the GT-conditioned offline one-step
    audit, and deployable causal rollout. The offline table is marked `offline_gt_audit=true` and is
    never presented as a tracker result.

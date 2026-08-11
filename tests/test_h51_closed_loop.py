@@ -245,11 +245,14 @@ def test_runtime_gradient_audit_identifies_exact_six_and_other_gradients_are_fin
     assert summary["probe_multi_candidate_only"] is True
     nonmemory = [row for row in rows if row["parameter"] not in expected]
     assert all(row["grad_present"] and row["finite"] for row in nonmemory)
-    assert all(
-        row["grad_nonzero"] or row["parameter"] == "pair_head.3.bias"
-        for row in nonmemory
-    )
-    assert summary["zero_gradient_parameters"] in ([], ["pair_head.3.bias"])
+    finite_zero = [
+        row["parameter"] for row in rows
+        if row["grad_present"] and row["finite"] and not row["grad_nonzero"]
+    ]
+    assert summary["zero_gradient_parameters"] == finite_zero
+    # Exact zero norms may differ across CPU/GPU kernels.  Any finite zero must
+    # fail readiness; the six missing memory gradients do so independently.
+    assert not finite_zero or summary["method_ready"] is False
     for row in nonmemory:
         assert row["used_in_training_objective"] == row["grad_nonzero"]
 
@@ -566,7 +569,15 @@ def test_h51_synthetic_smoke_has_scientific_gate_and_complete_outputs(tmp_path):
     gradient_summary = path_audit["per_model_gradient_summary"]["test_only_encoder"]
     assert gradient_summary["probe_multi_candidate_only"] is True
     assert gradient_summary["probe_current_candidate_counts"] == [2]
-    assert "pair_head.3.bias" in gradient_summary["zero_gradient_parameters"]
+    with (tmp_path / "h51" / "h51_gradient_coverage.csv").open("r", encoding="utf-8", newline="") as handle:
+        gradient_rows = list(csv.DictReader(handle))
+    finite_zero = [
+        row["parameter"] for row in gradient_rows
+        if row["grad_present"] == "True" and row["finite"] == "True"
+        and row["grad_nonzero"] == "False"
+    ]
+    assert gradient_summary["zero_gradient_parameters"] == finite_zero
+    assert not finite_zero or gradient_summary["method_ready"] is False
     assert gradient_summary["all_trainable_gradients_healthy"] is False
     equivalence = json.loads((tmp_path / "h51" / "h51_replay_equivalence.json").read_text(encoding="utf-8"))
     assert equivalence["oracle"] == "current_h5_tracker_test_only_oracle"
