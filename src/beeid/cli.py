@@ -60,6 +60,11 @@ from .h5.experiment import run_h5_all, track_h5, train_h5
 from .h5.protocol import validate_h5_protocol
 from .h5.report import generate_h5_report
 from .h5.synthetic import h5_synthetic_smoke
+from .h51 import H51_MODELS
+from .h51.core import validate_h51_inputs
+from .h51.experiment import run_h51_all, run_h51_diagnostic
+from .h51.protocol import validate_h51_protocol
+from .h51.synthetic import h51_synthetic_smoke
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -252,6 +257,23 @@ def _parser() -> argparse.ArgumentParser:
         "h5-synthetic-smoke", help="Run CPU-only BeeTrackQuery smoke with test-only features"
     )
     h5_synthetic.add_argument("--output", type=Path)
+    h51_validate_protocol = subparsers.add_parser(
+        "h51-validate-protocol", help="Validate the frozen post-H5 diagnostic protocol"
+    )
+    h51_validate_protocol.add_argument("--protocol", type=Path, required=True)
+    h51_validate_protocol.add_argument("--checksum", type=Path)
+    configured("h51-validate", "Validate read-only failed H5/H3 diagnostic inputs")
+    h51_run = configured(
+        "h51-diagnose", "Run the H5.1 development-only closed-loop diagnostic"
+    )
+    h51_run.add_argument("--models", nargs="+", choices=H51_MODELS, required=True)
+    h51_all = configured("h51-run-all", "Validate and run the full H5.1 diagnostic")
+    h51_all.add_argument("--models", nargs="+", choices=H51_MODELS, default=list(H51_MODELS))
+    h51_all.add_argument("--confirm-full", action="store_true")
+    h51_synthetic = subparsers.add_parser(
+        "h51-synthetic-smoke", help="Run CPU-only H5.1 scientific diagnostic smoke"
+    )
+    h51_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -453,6 +475,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h41_synthetic_smoke(arguments.output)
         elif arguments.command == "h5-synthetic-smoke":
             result = h5_synthetic_smoke(arguments.output)
+        elif arguments.command == "h51-synthetic-smoke":
+            result = h51_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h4-validate-protocol":
@@ -461,6 +485,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = validate_h41_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h5-validate-protocol":
             result = validate_h5_protocol(arguments.protocol, arguments.checksum)
+        elif arguments.command == "h51-validate-protocol":
+            result = validate_h51_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -596,6 +622,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = generate_h5_report(config, arguments.models)
             elif arguments.command == "h5-run-all":
                 result = run_h5_all(config, arguments.models, arguments.confirm_full)
+            elif arguments.command == "h51-validate":
+                result = validate_h51_inputs(config).audit
+            elif arguments.command == "h51-diagnose":
+                result = run_h51_diagnostic(config, arguments.models)
+            elif arguments.command == "h51-run-all":
+                result = run_h51_all(config, arguments.models, arguments.confirm_full)
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

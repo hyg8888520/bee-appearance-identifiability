@@ -29,6 +29,7 @@ class PathsConfig:
     h2_output_root: Path | None = None
     h3_output_root: Path | None = None
     h4_output_root: Path | None = None
+    h5_output_root: Path | None = None
     dino_python: Path | None = None
     topic_python: Path | None = None
 
@@ -219,6 +220,22 @@ class H5Config:
 
 
 @dataclass(frozen=True)
+class H51Config:
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    max_teacher_forced_rows: int
+    candidate_sample_per_observation: int
+    collapse_new_track_rate: float
+    collapse_prediction_inflation: float
+    gate_degeneracy_low: float
+    gate_degeneracy_high: float
+    min_gate_updates: int
+    max_teacher_rollout_idf1_gap: float
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -232,6 +249,7 @@ class ExperimentConfig:
     h4: H4Config | None
     h41: H41Config | None
     h5: H5Config | None
+    h51: H51Config | None = None
 
     @property
     def manifest_path(self) -> Path:
@@ -421,7 +439,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     root = _mapping(raw, "config")
     _keys(
         root,
-        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5"},
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5", "h51"},
         "config",
     )
     base = config_path.parent
@@ -430,7 +448,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     path_keys = {
         "bee24_root", "output_root", "cache_root", "dinov3_repo", "dinov3_weights",
         "topictrack_repo", "topic_agw_weights", "h1_output_root", "h2_output_root",
-        "h3_output_root", "h4_output_root",
+        "h3_output_root", "h4_output_root", "h5_output_root",
         "dino_python", "topic_python",
     }
     _keys(p, path_keys, "paths")
@@ -446,6 +464,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         h2_output_root=_path(p.get("h2_output_root"), base, "paths.h2_output_root", optional=True),
         h3_output_root=_path(p.get("h3_output_root"), base, "paths.h3_output_root", optional=True),
         h4_output_root=_path(p.get("h4_output_root"), base, "paths.h4_output_root", optional=True),
+        h5_output_root=_path(p.get("h5_output_root"), base, "paths.h5_output_root", optional=True),
         dino_python=_path(
             p.get("dino_python"), base, "paths.dino_python", optional=True, preserve_symlink=True
         ),
@@ -1177,6 +1196,57 @@ def load_config(path: str | Path) -> ExperimentConfig:
             bootstrap_replicates=_positive_int(_require(value, "bootstrap_replicates", "h5"), "h5.bootstrap_replicates"),
         )
 
+    h51: H51Config | None = None
+    if "h51" in root and root["h51"] is not None:
+        value = _mapping(root["h51"], "h51")
+        _keys(
+            value,
+            {
+                "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+                "max_teacher_forced_rows", "candidate_sample_per_observation",
+                "collapse_new_track_rate", "collapse_prediction_inflation",
+                "gate_degeneracy_low", "gate_degeneracy_high", "min_gate_updates",
+                "max_teacher_rollout_idf1_gap",
+            },
+            "h51",
+        )
+        if h5 is None or h3 is None:
+            raise ConfigurationError("h51 requires the unchanged frozen h3 and h5 sections")
+        if paths.h5_output_root is None or paths.h3_output_root is None:
+            raise ConfigurationError("H5.1 requires paths.h5_output_root and paths.h3_output_root")
+        for label, source_root in (("H3", paths.h3_output_root), ("H5", paths.h5_output_root)):
+            if _paths_overlap(paths.output_root, source_root):
+                raise ConfigurationError(
+                    f"H5.1 output_root must not contain or be contained by the {label} source root"
+                )
+        if dataset.source_splits != ("train",) or protocol.evaluation_split != "validation":
+            raise ConfigurationError(
+                "H5.1 is restricted to project_train gradient probing plus "
+                "development_validation offline audit and causal replay"
+            )
+        gate_low = _bounded_float(
+            _require(value, "gate_degeneracy_low", "h51"), "h51.gate_degeneracy_low", 0.0, 1.0
+        )
+        gate_high = _bounded_float(
+            _require(value, "gate_degeneracy_high", "h51"), "h51.gate_degeneracy_high", 0.0, 1.0
+        )
+        if gate_low >= gate_high:
+            raise ConfigurationError("h51.gate_degeneracy_low must be below gate_degeneracy_high")
+        h51 = H51Config(
+            protocol_lock_path=_path(_require(value, "protocol_lock", "h51"), base, "h51.protocol_lock"),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(_require(value, "protocol_checksum", "h51"), base, "h51.protocol_checksum"),  # type: ignore[arg-type]
+            project_split_path=_path(_require(value, "project_split", "h51"), base, "h51.project_split"),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h51"), "h51.allow_subset"),
+            max_teacher_forced_rows=_positive_int(_require(value, "max_teacher_forced_rows", "h51"), "h51.max_teacher_forced_rows"),
+            candidate_sample_per_observation=_positive_int(_require(value, "candidate_sample_per_observation", "h51"), "h51.candidate_sample_per_observation"),
+            collapse_new_track_rate=_bounded_float(_require(value, "collapse_new_track_rate", "h51"), "h51.collapse_new_track_rate", 0.0, 1.0),
+            collapse_prediction_inflation=_bounded_float(_require(value, "collapse_prediction_inflation", "h51"), "h51.collapse_prediction_inflation", 1.0, 1000.0),
+            gate_degeneracy_low=gate_low,
+            gate_degeneracy_high=gate_high,
+            min_gate_updates=_positive_int(_require(value, "min_gate_updates", "h51"), "h51.min_gate_updates"),
+            max_teacher_rollout_idf1_gap=_bounded_float(_require(value, "max_teacher_rollout_idf1_gap", "h51"), "h51.max_teacher_rollout_idf1_gap", 0.0, 1.0),
+        )
+
     return ExperimentConfig(
-        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5, h51
     )
