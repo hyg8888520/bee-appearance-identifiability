@@ -26,7 +26,7 @@ from ..utils import atomic_write_json, atomic_write_text, canonical_json, sha256
 from . import H5_MODELS, H5_PRIMARY_VARIANT, H5_VARIANTS
 from .core import H5Inputs, load_h5_source_embeddings, require_h5, validate_h5_inputs
 from .model import BeeTrackQuery
-from .tracker import normalized_geometry, track_sequence
+from .tracker import TRACKER_IMPLEMENTATION, normalized_geometry, track_sequences_batched
 
 
 def _write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
@@ -544,24 +544,308 @@ def _baseline_rows(config: ExperimentConfig, model_name: str, development_ids: s
     return selected
 
 
+def _tracking_signature(
+    config: ExperimentConfig,
+    inputs: H5Inputs,
+    *,
+    model_name: str,
+    video_id: str,
+    variant: str,
+    observation_ids: Sequence[str],
+    cache_fingerprint: Any,
+    checkpoint_sha256: str,
+) -> dict[str, Any]:
+    """All inputs that can affect an atomic causal tracking job."""
+    h5 = require_h5(config)
+    return {
+        "implementation": TRACKER_IMPLEMENTATION,
+        "model": model_name,
+        "video_id": video_id,
+        "variant": variant,
+        "observation_ids": list(observation_ids),
+        "checkpoint_sha256": checkpoint_sha256,
+        "source_cache_fingerprint": cache_fingerprint,
+        "h5_protocol_sha256": inputs.audit["h5_protocol_sha256"],
+        "manifest_sha256": inputs.audit["manifest_sha256"],
+        "project_split_sha256": inputs.audit["project_split_sha256"],
+        "tracking_parameters": {
+            "memory_slots": h5.memory_slots,
+            "memory_top_k": h5.memory_top_k,
+            "update_gate": h5.update_gate,
+            "memory_mix": h5.memory_mix,
+            "max_age": h5.max_age,
+            "min_assignment_score": h5.min_assignment_score,
+            "max_normalized_distance": h5.max_normalized_distance,
+        },
+        "runtime": {
+            "batch_size": config.runtime.batch_size,
+            "inference_autocast": False,
+            "embedding_dtype": "float32",
+            "model_parameter_dtype": "float32",
+            "score_dtype": "float64",
+        },
+        "seed": config.runtime.seed,
+        "final_test_read": False,
+    }
+
+
+def _tracking_fingerprint(signature: dict[str, Any]) -> str:
+    return sha256_text(canonical_json(signature))
+
+
+def _tracking_rows_digest(rows: Sequence[dict[str, Any]]) -> str:
+    """Digest canonical job rows before trusting an on-disk cache hit."""
+    return sha256_text(canonical_json(list(rows)))
+
+
+def _load_tracking_job(
+    path: Path,
+    fingerprint: str,
+    *,
+    model_name: str,
+    video_id: str,
+    variant: str,
+    observation_ids: Sequence[str],
+) -> dict[str, Any] | None:
+    """Reuse only a complete, exact job; malformed partial files are ignored."""
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    rows = value.get("rows") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("status") != "completed"
+        or value.get("fingerprint") != fingerprint
+        or value.get("final_test_read") is not False
+        or not isinstance(rows, list)
+        or len(rows) != len(observation_ids)
+        or value.get("rows_sha256") != _tracking_rows_digest(rows)
+    ):
+        return None
+    row_ids = [str(row.get("observation_id", "")) for row in rows if isinstance(row, dict)]
+    if (
+        len(row_ids) != len(rows)
+        or sorted(row_ids) != sorted(observation_ids)
+        or len(set(row_ids)) != len(row_ids)
+        or any(
+            row.get("model") != model_name
+            or row.get("video_id") != video_id
+            or row.get("variant") != variant
+            for row in rows
+        )
+    ):
+        return None
+    return value
+
+
 def track_h5(config: ExperimentConfig, model_names: Sequence[str]) -> dict[str, Any]:
     inputs = validate_h5_inputs(config)
     h5 = require_h5(config)
+    if not model_names or len(set(model_names)) != len(model_names):
+        raise ValueError("H5 tracking requires unique model names")
     observations = inputs.h3_inputs.observations
     development = inputs.indices("development_validation")
     by_video: dict[str, list[int]] = defaultdict(list)
     for index in development:
         by_video[observations[index].video_id].append(index)
     development_ids = {observations[index].observation_id for index in development}
+    for indices in by_video.values():
+        indices.sort(
+            key=lambda index: (
+                observations[index].frame,
+                observations[index].center_x,
+                observations[index].center_y,
+                observations[index].observation_id,
+            )
+        )
+    if not by_video:
+        raise RuntimeError("H5 tracking found no development_validation observations")
     all_rows: list[dict[str, Any]] = []
+    cache_audit: dict[str, Any] = {}
+    output = config.paths.output_root
+    total_jobs = len(model_names) * len(by_video) * len(H5_VARIANTS[1:])
+    total_frames = len(model_names) * len(H5_VARIANTS[1:]) * sum(
+        len({observations[index].frame for index in indices})
+        for indices in by_video.values()
+    )
+    completed_jobs = 0
+    reused_jobs = 0
+    completed_frames = 0
+    reported_frames = 0
+    tracking_started = time.monotonic()
+    progress_path = output / "h5_logs" / "tracking_progress.json"
+
+    def write_progress(
+        *,
+        status: str,
+        model: str | None = None,
+        video_id: str | None = None,
+        variant: str | None = None,
+        frame: int | None = None,
+        current_frames: int | None = None,
+    ) -> None:
+        nonlocal reported_frames
+        candidate_frames = completed_frames if current_frames is None else current_frames
+        # A live callback counts all frames in the in-flight batch, whereas a
+        # just-completed job counts only its own frames.  Never let the public
+        # progress/ETA move backward while those two notifications interleave.
+        reported_frames = max(reported_frames, min(total_frames, candidate_frames))
+        observed_frames = reported_frames
+        elapsed = max(time.monotonic() - tracking_started, 1e-6)
+        rate = observed_frames / elapsed
+        remaining = max(0, total_frames - observed_frames)
+        atomic_write_json(
+            progress_path,
+            {
+                "status": status,
+                "completed_jobs": completed_jobs,
+                "total_jobs": total_jobs,
+                "completed_frames": observed_frames,
+                "total_frames": total_frames,
+                "model": model,
+                "video_id": video_id,
+                "variant": variant,
+                "frame": frame,
+                "elapsed_seconds": elapsed,
+                "frames_per_second": rate if observed_frames else 0.0,
+                "eta_seconds": remaining / rate if rate > 0 else None,
+                "implementation": TRACKER_IMPLEMENTATION,
+                "final_test_read": False,
+            },
+        )
+
+    write_progress(status="running")
     for model_name in model_names:
-        embeddings, _ = load_h5_source_embeddings(config, model_name, inputs)
+        embeddings, cache = load_h5_source_embeddings(config, model_name, inputs)
+        cache_audit[model_name] = cache
         model = _load_model(config, model_name, embeddings.shape[1])
         all_rows.extend(_baseline_rows(config, model_name, development_ids))
+        checkpoint_path = output / "h5_checkpoints" / model_name / "final.pt"
+        checkpoint_sha256 = sha256_file(checkpoint_path)
+        pending: list[dict[str, Any]] = []
         for video_id in sorted(by_video):
-            indices = sorted(by_video[video_id], key=lambda i: (observations[i].frame, observations[i].center_x))
+            indices = by_video[video_id]
+            job_observations = [observations[index] for index in indices]
+            observation_ids = [item.observation_id for item in job_observations]
+            values = np.asarray(embeddings[indices], dtype=np.float32)
+            frame_count = len({item.frame for item in job_observations})
             for variant in H5_VARIANTS[1:]:
-                all_rows.extend(track_sequence(model_name, variant, model, [observations[i] for i in indices], embeddings[indices], h5, _device(config)))
+                signature = _tracking_signature(
+                    config,
+                    inputs,
+                    model_name=model_name,
+                    video_id=video_id,
+                    variant=variant,
+                    observation_ids=observation_ids,
+                    cache_fingerprint=cache.get("cache_fingerprint"),
+                    checkpoint_sha256=checkpoint_sha256,
+                )
+                fingerprint = _tracking_fingerprint(signature)
+                job_path = output / "h5_work" / "tracking" / model_name / variant / f"{video_id}.json"
+                job = _load_tracking_job(
+                    job_path,
+                    fingerprint,
+                    model_name=model_name,
+                    video_id=video_id,
+                    variant=variant,
+                    observation_ids=observation_ids,
+                )
+                if job is not None:
+                    all_rows.extend(job["rows"])
+                    completed_jobs += 1
+                    reused_jobs += 1
+                    completed_frames += frame_count
+                    write_progress(
+                        status="running",
+                        model=model_name,
+                        video_id=video_id,
+                        variant=variant,
+                        frame=job_observations[-1].frame,
+                    )
+                    continue
+                pending.append(
+                    {
+                        "model": model_name,
+                        "variant": variant,
+                        "video_id": video_id,
+                        "observations": job_observations,
+                        "embeddings": values,
+                        "path": job_path,
+                        "signature": signature,
+                        "fingerprint": fingerprint,
+                        "frame_count": frame_count,
+                    }
+                )
+        if pending:
+            base_completed_frames = completed_frames
+
+            def on_live_progress(event: dict[str, Any]) -> None:
+                write_progress(
+                    status="running",
+                    model=str(event["model"]),
+                    video_id=str(event["video_id"]),
+                    variant=str(event["variant"]),
+                    frame=int(event["frame"]),
+                    current_frames=base_completed_frames + int(event["completed_frames"]),
+                )
+
+            def on_job_complete(index: int, rows: list[dict[str, Any]]) -> None:
+                nonlocal completed_jobs, completed_frames
+                job = pending[index]
+                expected_ids = [item.observation_id for item in job["observations"]]
+                if len(rows) != len(expected_ids) or sorted(row["observation_id"] for row in rows) != sorted(expected_ids):
+                    raise RuntimeError("H5 tracking job did not produce one row for every observation")
+                elapsed = time.monotonic() - tracking_started
+                runtime = {
+                    "model": job["model"],
+                    "video_id": job["video_id"],
+                    "variant": job["variant"],
+                    "observation_count": len(rows),
+                    "frame_count": job["frame_count"],
+                    "elapsed_seconds_since_tracking_start": elapsed,
+                    "device_role": "causal_padded_frame_batch",
+                    "feature_extraction": "reused_h3_cache",
+                    "final_test_read": False,
+                }
+                atomic_write_json(
+                    job["path"],
+                    {
+                        "status": "completed",
+                        "fingerprint": job["fingerprint"],
+                        "signature": job["signature"],
+                        "rows": rows,
+                        "rows_sha256": _tracking_rows_digest(rows),
+                        "runtime": runtime,
+                        "final_test_read": False,
+                    },
+                )
+                all_rows.extend(rows)
+                completed_jobs += 1
+                completed_frames += int(job["frame_count"])
+                write_progress(
+                    status="running",
+                    model=str(job["model"]),
+                    video_id=str(job["video_id"]),
+                    variant=str(job["variant"]),
+                    frame=int(job["observations"][-1].frame),
+                )
+
+            sequences = [
+                (job["model"], job["variant"], job["observations"], job["embeddings"])
+                for job in pending
+            ]
+            track_sequences_batched(
+                model,
+                sequences,
+                h5,
+                _device(config),
+                batch_size=config.runtime.batch_size,
+                progress_callback=on_live_progress,
+                job_completed_callback=on_job_complete,
+            )
     all_rows.sort(key=lambda row: (row["model"], row["variant"], row["video_id"], int(row["frame_id"]), row["observation_id"]))
     per_video, summary = summarize_gt_assignments(all_rows)
     paired = paired_video_differences([
@@ -571,13 +855,26 @@ def track_h5(config: ExperimentConfig, model_names: Sequence[str]) -> dict[str, 
     for row in paired:
         if row["variant"] == "baseline_association":
             row["variant"] = "frozen_h3_baseline"
-    _write_csv(config.paths.output_root / "h5_assignments.csv", all_rows)
-    _write_csv(config.paths.output_root / "h5_per_video_metrics.csv", per_video)
-    _write_csv(config.paths.output_root / "h5_summary.csv", summary)
-    _write_csv(config.paths.output_root / "h5_paired_video_metrics.csv", paired)
-    _write_mot_results(config.paths.output_root / "h5_mot_results", all_rows, observations)
-    state = {"status": "completed_development_gt_boxes", "models": list(model_names), "variants": list(H5_VARIANTS), "assignment_rows": len(all_rows), "input_audit": inputs.audit, "final_test_read": False}
-    atomic_write_json(config.paths.output_root / "h5_tracking_metadata.json", state)
+    _write_csv(output / "h5_assignments.csv", all_rows)
+    _write_csv(output / "h5_per_video_metrics.csv", per_video)
+    _write_csv(output / "h5_summary.csv", summary)
+    _write_csv(output / "h5_paired_video_metrics.csv", paired)
+    _write_mot_results(output / "h5_mot_results", all_rows, observations)
+    state = {
+        "status": "completed_development_gt_boxes",
+        "models": list(model_names),
+        "variants": list(H5_VARIANTS),
+        "assignment_rows": len(all_rows),
+        "input_audit": inputs.audit,
+        "cache_audit": cache_audit,
+        "resumable_job_count": total_jobs,
+        "reused_job_count": reused_jobs,
+        "tracker_implementation": TRACKER_IMPLEMENTATION,
+        "gt_identity_used_for_decisions": False,
+        "final_test_read": False,
+    }
+    atomic_write_json(output / "h5_tracking_metadata.json", state)
+    write_progress(status="completed")
     return state
 
 
@@ -588,6 +885,23 @@ def run_h5_all(config: ExperimentConfig, model_names: Sequence[str], confirm_ful
     validate_h5_inputs(config)
     training = train_h5(config, model_names)
     tracking = track_h5(config, model_names)
+    progress_path = config.paths.output_root / "h5_logs" / "tracking_progress.json"
+    if progress_path.is_file():
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        progress.update({
+            "status": "reporting",
+            "reporting_started_at": datetime.now(timezone.utc).isoformat(),
+            "final_test_read": False,
+        })
+        atomic_write_json(progress_path, progress)
     from .report import generate_h5_report
     report = generate_h5_report(config, model_names)
+    if progress_path.is_file():
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        progress.update({
+            "status": "completed",
+            "reporting_completed_at": datetime.now(timezone.utc).isoformat(),
+            "final_test_read": False,
+        })
+        atomic_write_json(progress_path, progress)
     return {"status": report["status"], "training": training["status"], "tracking": tracking["status"], "models": list(model_names), "final_test_read": False}

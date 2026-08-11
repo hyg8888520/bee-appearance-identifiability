@@ -52,3 +52,8 @@ bash scripts/package_h5_results.sh \
 ```
 
 第一次真实运行后需要人工检查 `h5_method_decision.json`。无论 development 是否通过，本阶段均不得读取 final test；fixed-detector（固定检测器框）仍为 `SERVER_VALIDATION_PENDING`。
+# Tracking v4 resume and monitoring
+
+Tracking v4 uses causal padded frame batches: each `model × video × variant` job advances only after its own previous frame has been associated, while independent jobs share GPU kernels. Short-memory cosine/top-k selection is batched by its true (1–4) memory length, preserving per-track top-k input extent and tie behaviour. Completed jobs are atomically cached in `<output_root>/h5_work/tracking/`; incomplete jobs are never reused. A cache hit additionally requires an exact checkpoint SHA-256, H5 protocol, manifest/project split, source-cache fingerprint, ordered observation IDs, variant/video, tracking parameters, runtime batch/dtype settings, canonical row SHA-256, and implementation version.
+
+The monitor reports `h5_logs/tracking_progress.json` after training: completed jobs/frames, active model/video/variant/frame, throughput, and ETA. On the supplied 16-core server, `run_h5.sh`, `resume_h5.sh`, and `monitor_h5.sh` default to `OMP_NUM_THREADS=16` and `MKL_NUM_THREADS=16`; override with `BEEID_H5_CPU_THREADS` or explicit thread variables if the host is shared. This changes execution scheduling only, not the frozen H5 scientific protocol. Real RTX 4090 timing and result equivalence remain `SERVER_VALIDATION_PENDING` until validated on the server.
