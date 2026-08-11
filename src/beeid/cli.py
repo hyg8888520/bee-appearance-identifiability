@@ -65,6 +65,12 @@ from .h51.core import validate_h51_inputs
 from .h51.experiment import run_h51_all, run_h51_diagnostic
 from .h51.protocol import validate_h51_protocol
 from .h51.synthetic import h51_synthetic_smoke
+from .sltr import SLTR_MODELS
+from .sltr.core import validate_sltr_inputs
+from .sltr.experiment import fit_sltr_selector, run_sltr_all, run_sltr_audit, run_sltr_tracking
+from .sltr.protocol import validate_sltr_protocol
+from .sltr.report import generate_sltr_report
+from .sltr.synthetic import sltr_synthetic_smoke
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -274,6 +280,27 @@ def _parser() -> argparse.ArgumentParser:
         "h51-synthetic-smoke", help="Run CPU-only H5.1 scientific diagnostic smoke"
     )
     h51_synthetic.add_argument("--output", type=Path)
+    sltr_validate_protocol = subparsers.add_parser(
+        "sltr-validate-protocol", help="Validate the frozen SLTR protocol and checksum"
+    )
+    sltr_validate_protocol.add_argument("--protocol", type=Path, required=True)
+    sltr_validate_protocol.add_argument("--checksum", type=Path)
+    configured("sltr-validate", "Validate read-only H1/H3 inputs and final-test isolation for SLTR")
+    sltr_audit = configured("sltr-audit", "Build offline local A/B counterfactual audit rows")
+    sltr_audit.add_argument("--models", nargs="+", choices=SLTR_MODELS, required=True)
+    sltr_fit = configured("sltr-fit", "Fit project-train-only SLTR selector and OOF threshold")
+    sltr_fit.add_argument("--models", nargs="+", choices=SLTR_MODELS, required=True)
+    sltr_track = configured("sltr-track", "Evaluate frozen SLTR variants on development only")
+    sltr_track.add_argument("--models", nargs="+", choices=SLTR_MODELS, required=True)
+    sltr_report = configured("sltr-report", "Write SLTR development metrics, audit guide, and failure artifacts")
+    sltr_report.add_argument("--models", nargs="+", choices=SLTR_MODELS, required=True)
+    sltr_all = configured("sltr-run-all", "Run audited train-only SLTR fit and development tracking")
+    sltr_all.add_argument("--models", nargs="+", choices=SLTR_MODELS, default=list(SLTR_MODELS))
+    sltr_all.add_argument("--confirm-full", action="store_true")
+    sltr_synthetic = subparsers.add_parser(
+        "sltr-synthetic-smoke", help="Run SLTR selector smoke with a test-only encoder"
+    )
+    sltr_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -477,6 +504,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h5_synthetic_smoke(arguments.output)
         elif arguments.command == "h51-synthetic-smoke":
             result = h51_synthetic_smoke(arguments.output)
+        elif arguments.command == "sltr-synthetic-smoke":
+            result = sltr_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h4-validate-protocol":
@@ -487,6 +516,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = validate_h5_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h51-validate-protocol":
             result = validate_h51_protocol(arguments.protocol, arguments.checksum)
+        elif arguments.command == "sltr-validate-protocol":
+            result = validate_sltr_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -628,6 +659,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = run_h51_diagnostic(config, arguments.models)
             elif arguments.command == "h51-run-all":
                 result = run_h51_all(config, arguments.models, arguments.confirm_full)
+            elif arguments.command == "sltr-validate":
+                result = validate_sltr_inputs(config).audit
+            elif arguments.command == "sltr-audit":
+                result = run_sltr_audit(config, arguments.models)
+            elif arguments.command == "sltr-fit":
+                result = fit_sltr_selector(config, arguments.models)
+            elif arguments.command == "sltr-track":
+                result = run_sltr_tracking(config, arguments.models)
+            elif arguments.command == "sltr-report":
+                result = generate_sltr_report(config, arguments.models)
+            elif arguments.command == "sltr-run-all":
+                result = run_sltr_all(config, arguments.models, arguments.confirm_full)
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

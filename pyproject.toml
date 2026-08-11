@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bee-appearance-identifiability"
-version = "0.8.0"
-description = "Reproducible BEE24 appearance diagnostics, H5 tracking, and H5.1 closed-loop audits"
+version = "0.9.0"
+description = "Reproducible BEE24 appearance diagnostics, tracking, and SLTR development audits"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [

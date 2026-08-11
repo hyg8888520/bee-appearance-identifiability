@@ -1,0 +1,86 @@
+schema_version: 1
+protocol_id: bee24-sltr-selective-local-trajectory-repair-development-v1
+status: FROZEN_DEVELOPMENT
+design_timing: DEFINED_AFTER_H4_H41_DIAGNOSTICS
+identity_definition: [video_id, track_id]
+isolation_unit: video_id
+
+project_split:
+  path: configs/splits/project_split.yaml
+  partitions: [project_train, development_validation, final_test]
+  fit_partition: project_train
+  evaluation_partition: development_validation
+  final_test_access: false
+  final_test_excluded_from_fitting: true
+  final_test_excluded_from_selection: true
+
+sources:
+  h1_manifest: read_only
+  h3_cache: read_only_no_feature_reextraction
+  h3_signals: read_only_observable_only
+  h3_protocol_path: configs/h3_protocol.lock.yaml
+  h3_protocol_checksum_path: configs/h3_protocol.lock.sha256
+  h4_protocol_path: configs/h4_protocol.lock.yaml
+  h4_protocol_checksum_path: configs/h4_protocol.lock.sha256
+
+model_policy:
+  primary_backbones: [resnet50, dinov3]
+  official_topic_agw: REFERENCE_ONLY_NOT_A_METHOD_COMPONENT
+  trainable_parameters: selector_only_numpy_logistic
+
+counterfactual:
+  event_trigger: h4_local_assignment_ambiguity
+  option_a: rank_0_immediate_then_rank_0_horizon
+  option_b: rank_1_immediate_then_rank_0_horizon
+  horizon: 1
+  evidence_basis: H41_MEDIAN_FIRST_RECOVERY_LAG_ONE
+  component_policy: one_to_one_local_component_only
+  decision_causality: selected_branch_state_only_no_future_decision_input
+
+offline_labels:
+  mapping: event_prehistory_recent_5_unique_gt_to_pred
+  history_length: 5
+  utility: delta_correct_observations_minus_2_delta_idsw
+  unavailable_policy: exclude_from_fit_and_oof
+  method_input: FORBIDDEN
+
+selector:
+  algorithm: deterministic_numpy_l2_logistic
+  split: group_by_video_oof
+  threshold_data: oof_only
+  threshold_tie_break: higher_threshold
+  feature_policy: observable_finite_no_gt_identity_label_utility_correct
+  l2: 0.01
+  iterations: 400
+  learning_rate: 0.05
+  min_train_events: 30
+  min_train_videos: 4
+  min_positive_events: 10
+  min_precision: 0.8
+  max_harm: 0.05
+  min_selected_events: 10
+  min_selected_videos: 3
+  max_intervention_fraction: 0.30
+  noninferiority_tolerance: 0.002
+  min_nonharmed_videos: 4
+  random_seed: 24
+
+variants:
+  all: [immediate_baseline, always_repair, frequency_matched_random, oracle_selector, learned_selector]
+  primary: learned_selector
+  oracle_role: DIAGNOSTIC_ONLY_NOT_DEPLOYABLE
+
+final_test:
+  access: false
+  runs_allowed_in_sltr_development: 0
+
+claims:
+  allowed:
+    - development_only_selective_local_trajectory_repair
+    - offline_counterfactual_label_audit_separate_from_deployable_selector
+    - causal_selected_branch_state_evaluation_on_gt_boxes
+  forbidden:
+    - final_test_result_or_unlock
+    - oracle_selector_is_deployable
+    - topic_official_reproduction
+    - gt_box_result_is_end_to_end_mot

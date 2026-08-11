@@ -278,3 +278,21 @@ teacher-forced audit and causal replay. Create that local smoke config from
 Linux workflow. Synthetic success means the diagnostic correctly detects the known missing-memory-
 gradient defect; it does not mean BeeTrackQuery is method-ready. Real RTX 4090/BEE24 validation is
 `SERVER_VALIDATION_PENDING`.
+
+## SLTR selective local trajectory repair
+
+SLTR is a development-only, GT-box local association experiment. It reuses the frozen H1 manifest
+and H3 feature cache/signals read-only, fits only on `project_train`, evaluates only on
+`development_validation`, and never reads final test. At a local H4 ambiguity it compares rank-0
+immediate A with rank-1 immediate B, both followed by a deterministic one-frame horizon fixed from
+H4.1's median first-recovery lag. A
+deterministic NumPy L2 logistic selector is fitted and thresholded only with group-by-video OOF
+project-train labels; below threshold it takes exact A fallback. ResNet50 and DINOv3 are both
+required for a real development decision. `oracle_selector` is diagnostic only.
+
+Use `beeid sltr-synthetic-smoke` before configuring a real smoke. The synthetic test-only encoder
+and relaxed temporary lock are not experiment results. See [the SLTR protocol](docs/sltr_protocol.md)
+and [the server deployment guide](docs/sltr_server_deployment.md),
+and use `scripts/run_sltr.sh`, `resume_sltr.sh`, `monitor_sltr.sh`, `sltr_smoke_test.sh`, and
+`package_sltr_results.sh`. SLTR takes inspiration from the topic of local repair only; it is not an
+official reproduction of TOPICTrack or any upstream model.

@@ -190,6 +190,31 @@ class H41Config:
 
 
 @dataclass(frozen=True)
+class SLTRConfig:
+    """Frozen configuration for selective local trajectory repair (SLTR)."""
+
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    horizon: int
+    selector_l2: float
+    selector_iterations: int
+    selector_learning_rate: float
+    min_train_events: int
+    min_train_videos: int
+    min_positive_events: int
+    min_precision: float
+    max_harm: float
+    min_selected_events: int
+    min_selected_videos: int
+    max_intervention_fraction: float
+    noninferiority_tolerance: float
+    min_nonharmed_videos: int
+    random_seed: int
+
+
+@dataclass(frozen=True)
 class H5Config:
     protocol_lock_path: Path
     protocol_checksum_path: Path
@@ -250,6 +275,7 @@ class ExperimentConfig:
     h41: H41Config | None
     h5: H5Config | None
     h51: H51Config | None = None
+    sltr: SLTRConfig | None = None
 
     @property
     def manifest_path(self) -> Path:
@@ -439,7 +465,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     root = _mapping(raw, "config")
     _keys(
         root,
-        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5", "h51"},
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5", "h51", "sltr"},
         "config",
     )
     base = config_path.parent
@@ -1247,6 +1273,77 @@ def load_config(path: str | Path) -> ExperimentConfig:
             max_teacher_rollout_idf1_gap=_bounded_float(_require(value, "max_teacher_rollout_idf1_gap", "h51"), "h51.max_teacher_rollout_idf1_gap", 0.0, 1.0),
         )
 
+    sltr: SLTRConfig | None = None
+    if "sltr" in root and root["sltr"] is not None:
+        value = _mapping(root["sltr"], "sltr")
+        _keys(
+            value,
+            {
+                "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+                "horizon", "selector_l2", "selector_iterations", "selector_learning_rate",
+                "min_train_events", "min_train_videos", "min_positive_events",
+                "min_precision", "max_harm", "min_selected_events", "min_selected_videos",
+                "max_intervention_fraction", "noninferiority_tolerance",
+                "min_nonharmed_videos", "random_seed",
+            },
+            "sltr",
+        )
+        if h3 is None or h4 is None:
+            raise ConfigurationError("sltr requires unchanged frozen h3 and h4 tracker sections")
+        if paths.h1_output_root is None or paths.h3_output_root is None:
+            raise ConfigurationError("SLTR requires paths.h1_output_root and paths.h3_output_root")
+        source_roots = [("H1", paths.h1_output_root), ("H3", paths.h3_output_root)]
+        if paths.h4_output_root is not None:
+            source_roots.append(("H4", paths.h4_output_root))
+        if paths.h5_output_root is not None:
+            source_roots.append(("H5", paths.h5_output_root))
+        for label, source_root in source_roots:
+            if _paths_overlap(paths.output_root, source_root):
+                raise ConfigurationError(
+                    f"SLTR output_root must not contain or be contained by the {label} source root"
+                )
+        if dataset.source_splits != ("train",) or protocol.evaluation_split != "validation":
+            raise ConfigurationError(
+                "SLTR is restricted to project_train fitting and development_validation evaluation"
+            )
+        horizon = _positive_int(_require(value, "horizon", "sltr"), "sltr.horizon")
+        if horizon != 1:
+            raise ConfigurationError("sltr.horizon is frozen at 1 by the H4.1 first-recovery evidence")
+        l2 = _bounded_float(_require(value, "selector_l2", "sltr"), "sltr.selector_l2", 0.0, 1_000_000.0)
+        learning_rate = _bounded_float(
+            _require(value, "selector_learning_rate", "sltr"),
+            "sltr.selector_learning_rate", 1e-12, 1.0,
+        )
+        min_precision = _bounded_float(_require(value, "min_precision", "sltr"), "sltr.min_precision", 0.0, 1.0)
+        max_harm = _bounded_float(_require(value, "max_harm", "sltr"), "sltr.max_harm", 0.0, 1.0)
+        intervention_fraction = _bounded_float(
+            _require(value, "max_intervention_fraction", "sltr"),
+            "sltr.max_intervention_fraction", 0.0, 1.0,
+        )
+        if min_precision < 0.8 or max_harm > 0.05 or intervention_fraction > 0.30:
+            raise ConfigurationError("SLTR safety bounds cannot relax the frozen precision/harm/fraction limits")
+        sltr = SLTRConfig(
+            protocol_lock_path=_path(_require(value, "protocol_lock", "sltr"), base, "sltr.protocol_lock"),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(_require(value, "protocol_checksum", "sltr"), base, "sltr.protocol_checksum"),  # type: ignore[arg-type]
+            project_split_path=_path(_require(value, "project_split", "sltr"), base, "sltr.project_split"),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "sltr"), "sltr.allow_subset"),
+            horizon=horizon,
+            selector_l2=l2,
+            selector_iterations=_positive_int(_require(value, "selector_iterations", "sltr"), "sltr.selector_iterations"),
+            selector_learning_rate=learning_rate,
+            min_train_events=_positive_int(_require(value, "min_train_events", "sltr"), "sltr.min_train_events"),
+            min_train_videos=_positive_int(_require(value, "min_train_videos", "sltr"), "sltr.min_train_videos"),
+            min_positive_events=_positive_int(_require(value, "min_positive_events", "sltr"), "sltr.min_positive_events"),
+            min_precision=min_precision,
+            max_harm=max_harm,
+            min_selected_events=_positive_int(_require(value, "min_selected_events", "sltr"), "sltr.min_selected_events"),
+            min_selected_videos=_positive_int(_require(value, "min_selected_videos", "sltr"), "sltr.min_selected_videos"),
+            max_intervention_fraction=intervention_fraction,
+            noninferiority_tolerance=_bounded_float(_require(value, "noninferiority_tolerance", "sltr"), "sltr.noninferiority_tolerance", 0.0, 0.1),
+            min_nonharmed_videos=_positive_int(_require(value, "min_nonharmed_videos", "sltr"), "sltr.min_nonharmed_videos"),
+            random_seed=_positive_int(_require(value, "random_seed", "sltr"), "sltr.random_seed"),
+        )
+
     return ExperimentConfig(
-        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5, h51
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5, h51, sltr
     )
