@@ -74,6 +74,16 @@ def _locked_parameters(value: SLTRConfig) -> dict[str, Any]:
     }
 
 
+def _protocol_provenance(protocol: dict[str, Any]) -> dict[str, Any]:
+    """Keep SLTR and source protocol identities distinct in downstream audits."""
+    return {
+        "protocol_id": protocol["protocol_id"],
+        "protocol_sha256": protocol["protocol_sha256"],
+        "source_h3_protocol_sha256": protocol["source_h3_protocol_sha256"],
+        "source_h4_protocol_sha256": protocol["source_h4_protocol_sha256"],
+    }
+
+
 def validate_sltr_inputs(config: ExperimentConfig) -> SLTRInputs:
     sltr = require_sltr(config)
     if config.h4 is None:
@@ -138,8 +148,7 @@ def validate_sltr_inputs(config: ExperimentConfig) -> SLTRInputs:
         {
             **h3_inputs.audit,
             "status": "valid", "role": "sltr_train_only_fit_development_only_evaluation",
-            "protocol_id": protocol["protocol_id"], "protocol_sha256": protocol["protocol_sha256"],
-            "source_h4_protocol_sha256": protocol["source_h4_protocol_sha256"],
+            **_protocol_provenance(protocol),
             "source_h3_root": str(source_root),
             "source_h3_run_metadata_sha256": sha256_file(source_root / "h3_run_metadata.json"),
             "source_h3_tracking_metadata_sha256": sha256_file(source_root / "h3_tracking_metadata.json"),
@@ -170,7 +179,6 @@ def load_sltr_embeddings(
         "protocol_sha256": selected.audit["source_h3_protocol_sha256"],
         "project_split_sha256": selected.audit["project_split_sha256"],
         "crop_expansion": config.protocol.crop_expansion, "input_size": config.protocol.input_size,
-        "amp": config.runtime.amp, "amp_dtype": config.runtime.amp_dtype,
         "final_test_read": False,
     }
     if not require_sltr(config).allow_subset:

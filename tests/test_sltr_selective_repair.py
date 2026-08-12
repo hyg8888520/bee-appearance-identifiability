@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from beeid.config import ConfigurationError, load_config
+from beeid.sltr.core import _protocol_provenance
 from beeid.sltr.protocol import SLTRProtocolError, validate_sltr_protocol
 from beeid.sltr.experiment import _gate
 from beeid.sltr.selector import SelectorError, choose_oof_threshold, group_oof_probabilities
@@ -42,6 +43,10 @@ def test_sltr_checksum_split_final_lock_and_examples(tmp_path):
     )
     assert audit["final_test_access"] is False
     assert audit["parameters"]["horizon"] == 1
+    provenance = _protocol_provenance(audit)
+    assert provenance["protocol_sha256"] == audit["protocol_sha256"]
+    assert provenance["source_h3_protocol_sha256"] == audit["source_h3_protocol_sha256"]
+    assert provenance["source_h3_protocol_sha256"] != provenance["protocol_sha256"]
     for name, subset in (("sltr.example.yaml", False), ("sltr.local.yaml.example", False), ("sltr_smoke.example.yaml", True)):
         config = load_config(ROOT / "configs" / name)
         assert config.sltr is not None and config.sltr.allow_subset is subset
