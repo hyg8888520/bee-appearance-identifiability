@@ -1,0 +1,22 @@
+# Copy this file to h51.local.yaml (ignored by git) and replace every external path.
+# Keep all H3/H5/H5.1 protocol and diagnostic parameters byte-for-value equivalent
+# to h51.example.yaml. The minimal smoke must include one project_train video for
+# gradient-probe inputs and one development_validation video for offline/rollout audit.
+paths:
+  bee24_root: /absolute/path/to/BEE24
+  h1_output_root: /absolute/path/to/completed-h1
+  h3_output_root: /absolute/path/to/completed-h3
+  h5_output_root: /absolute/path/to/completed-failed-h5
+  output_root: /absolute/path/to/new-h51-output
+  cache_root: /absolute/path/to/new-h51-cache
+  dinov3_repo: /absolute/path/to/dinov3
+  dinov3_weights: /absolute/path/to/dinov3_vits16.pth
+  topictrack_repo: /absolute/path/to/TOPICTrack
+  topic_agw_weights: /absolute/path/to/bee_agw_s50.pth
+runtime: {device: 'cuda:0', batch_size: 16, num_workers: 4, amp: false, amp_dtype: float16, seed: 24, cache_shard_size: 512}
+dataset: {source_splits: [train], bbox_origin: one, invalid_bbox_policy: skip, duplicate_identity_policy: exclude_conflict, missing_seqinfo_policy: infer_from_images, confidence_min: 0.0, validation_fraction: 0.2, max_videos: null, max_frames_per_video: null, video_ids: [], deep_validate_images: false}
+protocol: {deltas: [1, 5, 10, 25], crop_expansion: 0.2, input_size: 224, hard_negative_k: 5, evaluation_split: validation, failure_top_k: 10}
+models: {resnet_weights: IMAGENET1K_V2, dinov3_hub_model: dinov3_vits16, dinov3_feature_source: patch_mean, topic_config_relative: fast-reid/configs/bee/AGW_S50.yml}
+h3: {protocol_lock: h3_protocol.lock.yaml, protocol_checksum: h3_protocol.lock.sha256, project_split: splits/project_split.yaml, allow_subset: false, stage: gt_detection_boxes, fixed_detections_root: null, history_length: 5, quantile_knots: 101, min_reliability: 0.05, memory_alpha: 0.2, update_gate: 0.25, appearance_weight: 0.7, motion_weight: 0.3, max_normalized_distance: 4.0, min_assignment_score: 0.1, max_age: 25, bootstrap_replicates: 1000}
+h5: {protocol_lock: h5_protocol.lock.yaml, protocol_checksum: h5_protocol.lock.sha256, project_split: splits/project_split.yaml, allow_subset: false, hidden_dim: 128, num_heads: 4, clip_length: 4, memory_slots: 4, memory_top_k: 2, dropout: 0.1, epochs: 12, learning_rate: 0.0003, weight_decay: 0.0001, max_train_clips_per_video: 256, train_clip_stride: 2, max_pair_elements_per_batch: 262144, checkpoint_interval_batches: 25, reliability_loss_weight: 0.25, update_gate: 0.70, memory_mix: 0.25, max_age: 25, min_assignment_score: 0.50, max_normalized_distance: 4.0, noninferiority_tolerance: 0.002, min_nonharmed_videos: 4, bootstrap_replicates: 1000}
+h51: {protocol_lock: h51_protocol.lock.yaml, protocol_checksum: h51_protocol.lock.sha256, project_split: splits/project_split.yaml, allow_subset: false, max_teacher_forced_rows: 250000, candidate_sample_per_observation: 3, collapse_new_track_rate: 0.70, collapse_prediction_inflation: 2.00, gate_degeneracy_low: 0.05, gate_degeneracy_high: 0.95, min_gate_updates: 20, max_teacher_rollout_idf1_gap: 0.25}

@@ -1,0 +1,117 @@
+schema_version: 1
+protocol_id: bee24-h41-window-recovery-adaptive-commit-development-v1
+status: FROZEN_EXPLORATORY_DEVELOPMENT
+identity_definition: [video_id, track_id]
+isolation_unit: video_id
+design_timing: DEFINED_AFTER_OBSERVING_H4_V1_DEVELOPMENT_AUDIT
+
+project_split:
+  path: configs/splits/project_split.yaml
+  partitions: [project_train, development_validation, final_test]
+  evaluation_partition: development_validation
+  final_test_access: false
+  final_test_excluded_from_fitting: true
+  final_test_excluded_from_selection: true
+
+source_h4_v1:
+  protocol_path: configs/h4_protocol.lock.yaml
+  protocol_checksum_path: configs/h4_protocol.lock.sha256
+  required_run_status: stopped_after_recoverability_audit
+  required_gate_status: STOP_NO_RECOVERABILITY_SIGNAL
+  required_artifacts:
+    - h4_run_metadata.json
+    - h4_recoverability_metadata.json
+    - h4_protocol_decision.json
+    - h4_recoverability_baseline_assignments.csv
+    - h4_recoverability_events.csv
+  reuse_policy: read_only_provenance_and_exact_horizon_crosscheck
+  preserved_conclusion: H4_V1_EXACT_T_PLUS_10_GATE_FAILED
+
+source_h3:
+  reuse_policy: read_only_no_feature_reextraction
+  required_status: completed_development_gt_boxes
+
+model_policy:
+  primary_backbones: [resnet50, dinov3]
+  official_topic_agw: REFERENCE_ONLY_NOT_A_METHOD_COMPONENT
+  trainable_parameters: 0
+
+window_recoverability_audit:
+  exact_horizons: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  cumulative_deadlines: [1, 3, 5, 10]
+  gate_deadline: 5
+  history_length: 5
+  unique_margin: 0.0
+  estimand: ever_uniquely_correct_joint_assignment_at_any_exact_lag_up_to_deadline
+  denominator: all_baseline_idsw_events
+  missing_future_policy: remains_in_denominator_and_not_recoverable_at_missing_lag
+  ground_truth_use: OFFLINE_ORACLE_DIAGNOSTIC_ONLY
+  method_input_use: FORBIDDEN
+  report_exact_and_cumulative_separately: true
+
+adaptive_hypothesis_tracker:
+  event_trigger: local_assignment_ambiguity
+  max_decision_horizon: 5
+  min_decision_lag: 1
+  decision_margin: 0.03
+  decision_margin_normalization: cumulative_objective_gap_divided_by_processed_event_frames
+  winner_stability_steps: 2
+  early_commit_rule: stable_winner_and_normalized_margin_at_least_threshold
+  deadline_rule: force_best_branch_at_horizon
+  beam_width: 6
+  max_component_size: 4
+  ambiguity_margin: 0.03
+  memory_alpha: 0.2
+  appearance_weight: 0.7
+  motion_weight: 0.3
+  max_normalized_distance: 4.0
+  min_assignment_score: 0.1
+  unmatched_penalty: 0.25
+  max_age: 25
+  branch_memory_policy: copy_on_branch_commit_winner_only
+  causality: no_frame_after_recorded_decision_frame
+  ground_truth_decision_input: FORBIDDEN
+
+association_variants:
+  - immediate_commit
+  - fixed_lag_frozen_memory_h5
+  - fixed_lag_isolated_memory_h5
+  - adaptive_lag_frozen_memory_h5
+  - adaptive_lag_isolated_memory_h5
+primary_variant: adaptive_lag_isolated_memory_h5
+
+metrics:
+  primary: [AssA, IDF1, IDSW, HOTA]
+  latency: [decision_latency_frames, realized_horizon, early_commit_fraction]
+  efficiency: [event_count, hypotheses_expanded, oversized_conflict_count]
+  uncertainty: video_cluster_bootstrap
+
+stop_go:
+  cumulative_recoverability_gate:
+    min_joint_recoverable_fraction: 0.30
+    min_events_per_model: 10
+    min_videos_with_events: 3
+    failure_action: STOP_BEFORE_METHOD_EVALUATION
+  method_gate:
+    noninferiority_tolerance: 0.002
+    min_nonharmed_videos: 4
+    require_positive_idsw_reduction_each_primary_backbone: true
+    require_idf1_and_hota_noninferiority_each_primary_backbone: true
+
+final_test:
+  access: false
+  runs_allowed_in_h41_development: 0
+  next_protocol_required: true
+
+claims:
+  allowed:
+    - exploratory_window_recoverability_on_development_if_labeled_oracle
+    - causal_adaptive_commitment_results_on_development_gt_boxes
+    - branch_memory_isolation_and_early_commit_ablation_on_frozen_backbones
+  forbidden:
+    - h41_was_preregistered_before_h4_v1_results
+    - oracle_recoverability_is_a_deployable_tracker_result
+    - adaptive_stopping_or_multiple_hypothesis_tracking_is_novel_by_itself
+    - gt_box_results_are_end_to_end_mot_results
+    - development_results_are_final_test_results
+    - topic_is_a_component_of_the_proposed_method

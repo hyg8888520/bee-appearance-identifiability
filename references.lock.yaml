@@ -1,0 +1,70 @@
+schema_version: 1
+references:
+  dinov3:
+    url: https://github.com/facebookresearch/dinov3
+    commit: 6876159a11b4df116f30f667f8c9888617df0751
+    license: DINOv3 custom license
+    interface: torch.hub.load(source=local); forward_features(); get_intermediate_layers()
+    purpose: ViT-S/16 patch-token and CLS appearance embeddings
+  topictrack:
+    url: https://github.com/holmescao/TOPICTrack
+    commit: e7b260f41a92fbe94419ce448aa7b53fe80a6814
+    license: MIT
+    interface: fast-reid/configs/bee/AGW_S50.yml and vendored FastReID build_model
+    purpose: Official BEE AGW/FastReID appearance baseline only
+  fastreid:
+    url: https://github.com/JDAI-CV/fast-reid
+    commit: c9bc3ceb2f7a6438b62fb515ea3df6d1e999e95d
+    license: Apache-2.0
+    interface: Config/build_model/checkpointer audit only
+    purpose: Interface audit; runtime uses TOPICTrack's pinned vendored copy
+  trackeval:
+    url: https://github.com/JonathonLuiten/TrackEval
+    commit: 12c8791b303e0a0b50f753af204249e622d0281a
+    license: MIT
+    interface: MOTChallenge format plus HOTA, Identity, and CLEAR metric semantics audit
+    purpose: H3 formula audit and MOTChallenge export verification; not vendored or imported at runtime
+  torchvision:
+    url: https://github.com/pytorch/vision
+    commit: 59a3e1f9f78cfe44cb989877cc6f4ea77c8a75ca
+    tag: v0.22.1
+    license: BSD-3-Clause
+    interface: resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+    purpose: ResNet50 baseline and official transforms
+  bee24:
+    url: https://holmescao.github.io/datasets/BEE24
+    commit: null
+    license: LICENSE_NOT_STATED_BY_SOURCE
+    interface: MOTChallenge train/test trees
+    purpose: User-lawfully-obtained evaluation data; never redistributed
+research_prior_art:
+  tracking_by_associating_clips:
+    url: https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/5114_ECCV_2022_paper.php
+    venue: ECCV 2022
+    runtime_dependency: false
+    purpose: Prior art boundary for multi-frame clip association and error propagation
+  memot:
+    url: https://openaccess.thecvf.com/content/CVPR2022/html/Cai_MeMOT_Multi-Object_Tracking_With_Memory_CVPR_2022_paper.html
+    venue: CVPR 2022
+    runtime_dependency: false
+    purpose: Prior art boundary for long-term tracking memory
+  memotr:
+    url: https://openaccess.thecvf.com/content/ICCV2023/html/Gao_MeMOTR_Long-Term_Memory-Augmented_Transformer_for_Multi-Object_Tracking_ICCV_2023_paper.html
+    venue: ICCV 2023
+    runtime_dependency: false
+    purpose: Prior art boundary for memory-augmented temporal association
+  marginal_inference_mot:
+    url: https://www.ecva.net/papers/eccv_2022/papers_ECCV/html/317_ECCV_2022_paper.php
+    venue: ECCV 2022
+    runtime_dependency: false
+    purpose: Prior art boundary for assignment uncertainty and marginal probabilities
+  u2mot:
+    url: https://openaccess.thecvf.com/content/ICCV2023/html/Liu_Uncertainty-Aware_Unsupervised_Multi-Object_Tracking_ICCV_2023_paper.html
+    venue: ICCV 2023
+    runtime_dependency: false
+    purpose: Prior art boundary for uncertainty-aware MOT
+  detram:
+    url: https://arxiv.org/abs/2607.09089
+    venue: ECCV 2026
+    runtime_dependency: false
+    purpose: Prior art boundary for persistent tracking queries, current-frame query refresh, and finite temporal memory

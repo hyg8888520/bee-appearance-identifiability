@@ -1,0 +1,71 @@
+# Full H4 development. Copy to h4.local.yaml and edit external paths only.
+paths:
+  bee24_root: /path/to/datasets/BEE24
+  h1_output_root: /path/to/experiments/beeid/h1
+  h3_output_root: /path/to/experiments/beeid/h3-gt-dev
+  output_root: /path/to/experiments/beeid/h4-deferred-identity-dev
+  cache_root: /path/to/experiments/beeid/cache-h3
+  dinov3_repo: /path/to/third_party/dinov3
+  dinov3_weights: /path/to/checkpoints/dinov3/dinov3_vits16.pth
+  topictrack_repo: /path/to/third_party/TOPICTrack
+  topic_agw_weights: /path/to/checkpoints/topictrack/bee_agw_s50.pth
+  dino_python: /path/to/venvs/beeid-dino/bin/python
+  topic_python: /path/to/venvs/beeid-topic/bin/python
+runtime:
+  device: cuda:0
+  batch_size: 32
+  num_workers: 4
+  amp: true
+  amp_dtype: float16
+  seed: 24
+  cache_shard_size: 512
+dataset:
+  source_splits: [train]
+  bbox_origin: one
+  invalid_bbox_policy: skip
+  duplicate_identity_policy: exclude_conflict
+  missing_seqinfo_policy: infer_from_images
+  confidence_min: 0.0
+  validation_fraction: 0.2
+  max_videos: null
+  max_frames_per_video: null
+  video_ids: []
+  deep_validate_images: false
+protocol:
+  deltas: [1, 5, 10, 25]
+  crop_expansion: 0.2
+  input_size: 224
+  hard_negative_k: 5
+  evaluation_split: validation
+  failure_top_k: 10
+models:
+  resnet_weights: IMAGENET1K_V2
+  dinov3_hub_model: dinov3_vits16
+  dinov3_feature_source: patch_mean
+  topic_config_relative: fast-reid/configs/bee/AGW_S50.yml
+h4:
+  protocol_lock: h4_protocol.lock.yaml
+  protocol_checksum: h4_protocol.lock.sha256
+  project_split: splits/project_split.yaml
+  allow_subset: false
+  horizons: [1, 3, 5, 10]
+  go_horizon: 10
+  primary_horizon: 5
+  oracle_history_length: 5
+  oracle_unique_margin: 0.0
+  min_recoverable_fraction: 0.30
+  min_events_per_model: 10
+  min_videos_with_events: 3
+  beam_width: 6
+  max_component_size: 4
+  ambiguity_margin: 0.03
+  memory_alpha: 0.2
+  appearance_weight: 0.7
+  motion_weight: 0.3
+  max_normalized_distance: 4.0
+  min_assignment_score: 0.1
+  unmatched_penalty: 0.25
+  max_age: 25
+  noninferiority_tolerance: 0.002
+  min_nonharmed_videos: 4
+  bootstrap_replicates: 1000

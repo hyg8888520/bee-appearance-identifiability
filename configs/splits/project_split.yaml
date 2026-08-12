@@ -1,0 +1,128 @@
+schema_version: 1
+split_id: bee24-project-split-seed24-v1
+status: FROZEN
+
+identity_definition: [video_id, track_id]
+isolation_unit: video_id
+
+selection:
+  development_validation:
+    source_split: train
+    algorithm: "sort by (SHA256(f'{seed}:{video_id}'), video_id), then select max(1, round(fraction * n_train))"
+    seed: 24
+    fraction: 0.2
+    selected_count: 6
+  final_test:
+    source_split: test
+    selection_rule: use the complete official BEE24 test directory inventory
+    used_for_method_selection: false
+    evaluation_allowed_after_method_freeze: true
+
+source_inventory:
+  train_video_ids:
+    - BEE24-01
+    - BEE24-02
+    - BEE24-03
+    - BEE24-04
+    - BEE24-05
+    - BEE24-06
+    - BEE24-07
+    - BEE24-08
+    - BEE24-09
+    - BEE24-10
+    - BEE24-11
+    - BEE24-14
+    - BEE24-15
+    - BEE24-17
+    - BEE24-18
+    - BEE24-19
+    - BEE24-20
+    - BEE24-21
+    - BEE24-22
+    - BEE24-23
+    - BEE24-24
+    - BEE24-25
+    - BEE24-26
+    - BEE24-27
+    - BEE24-28
+    - BEE24-29
+    - BEE24-30
+    - BEE24-31
+    - BEE24-32
+    - BEE24-33
+    - BEE24-35
+  test_video_ids:
+    - BEE24-12
+    - BEE24-13
+    - BEE24-16
+    - BEE24-34
+    - BEE24-36
+
+partitions:
+  project_train:
+    role: model fitting and method development
+    source_split: train
+    may_update_parameters: true
+    may_select_hyperparameters: false
+    video_ids:
+      - BEE24-01
+      - BEE24-02
+      - BEE24-04
+      - BEE24-05
+      - BEE24-06
+      - BEE24-07
+      - BEE24-08
+      - BEE24-10
+      - BEE24-11
+      - BEE24-14
+      - BEE24-15
+      - BEE24-18
+      - BEE24-19
+      - BEE24-20
+      - BEE24-21
+      - BEE24-23
+      - BEE24-24
+      - BEE24-27
+      - BEE24-28
+      - BEE24-29
+      - BEE24-30
+      - BEE24-31
+      - BEE24-32
+      - BEE24-33
+      - BEE24-35
+  development_validation:
+    role: model selection, thresholds, ablations, and error analysis
+    source_split: train
+    may_update_parameters: false
+    may_select_hyperparameters: true
+    video_ids:
+      - BEE24-03
+      - BEE24-09
+      - BEE24-17
+      - BEE24-22
+      - BEE24-25
+      - BEE24-26
+  final_test:
+    role: one-time locked evaluation after method and configuration freeze
+    source_split: test
+    may_update_parameters: false
+    may_select_hyperparameters: false
+    video_ids:
+      - BEE24-12
+      - BEE24-13
+      - BEE24-16
+      - BEE24-34
+      - BEE24-36
+
+provenance:
+  frozen_from_benchmark_finished_at_utc: "2026-08-09T08:17:31.332368+00:00"
+  project_git_commit: 9a92b27dce432ad6ce79e0b71dff4a801a7b0afe
+  manifest_sha256: aec25bde8c9a023d78a96c85dbdaab4740f2ce5ebc08d01b53f1e2f334691bac
+  resolved_split_source: completed H1 output/resolved_split.yaml
+  final_test_inventory_source: BEE24 test directory inventory observed during server deployment
+
+rules:
+  - No frames, crops, or identities from development_validation or final_test may train a split-clean model.
+  - Development validation is no longer an unbiased final test because it has already been inspected.
+  - Final-test metrics must not be read until the method, thresholds, training recipe, and reporting code are frozen.
+  - Official TOPIC BEE AGW remains REFERENCE_ONLY unless its training-image mapping is audited; see docs/agw_training_overlap_audit.md.
