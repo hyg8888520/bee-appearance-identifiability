@@ -189,8 +189,9 @@ def load_sltr_embeddings(
         mismatch.append("model")
     if mismatch:
         raise SLTRInputError("H3 cache signature mismatch for %s: %s" % (model_name, ", ".join(mismatch)))
-    embeddings = cache.load_all(
-        [item.observation_id for item in selected.observations], config.runtime.cache_shard_size
+    embeddings = cache.load_selected(
+        [item.observation_id for item in selected.observations],
+        require_exact_ids=not require_sltr(config).allow_subset,
     )
     if embeddings.dtype != np.float32 or embeddings.ndim != 2 or not np.isfinite(embeddings).all():
         raise SLTRInputError("Read-only H3 embeddings are invalid")

@@ -22,6 +22,18 @@ def test_cache_atomic_write_resume_and_roundtrip(tmp_path):
     assert open_cache(cache.directory, "m").fingerprint == cache.fingerprint
 
 
+def test_cache_selected_load_ignores_historical_shard_boundaries(tmp_path):
+    cache = FeatureCache(tmp_path, "m", {"x": 1})
+    cache.write_shard(0, ["a", "b"], np.asarray([[1, 0], [0, 1]], dtype=np.float32))
+    cache.write_shard(1, ["c"], np.asarray([[1, 0]], dtype=np.float32))
+    selected = cache.load_selected(["c", "a"])
+    np.testing.assert_array_equal(selected, np.asarray([[1, 0], [1, 0]], dtype=np.float32))
+    with pytest.raises(CacheError, match="do not exactly match"):
+        cache.load_selected(["c", "a"], require_exact_ids=True)
+    with pytest.raises(CacheError, match="missing 1 requested"):
+        cache.load_selected(["missing"])
+
+
 def test_cache_signature_is_stable_and_metadata_mismatch_refused(tmp_path):
     first = {"b": 2, "a": 1}
     second = {"a": 1, "b": 2}

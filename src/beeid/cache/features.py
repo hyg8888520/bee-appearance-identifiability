@@ -105,6 +105,66 @@ class FeatureCache:
             raise CacheError("No embeddings available")
         return np.concatenate(chunks, axis=0)
 
+    def load_selected(
+        self, expected_ids: list[str], *, require_exact_ids: bool = False,
+    ) -> np.ndarray:
+        """Load IDs in caller order without assuming the cache's historical shard size."""
+        if not expected_ids:
+            raise CacheError("No embedding IDs requested")
+        if len(set(expected_ids)) != len(expected_ids):
+            raise CacheError("Requested embedding IDs contain duplicates")
+        paths = sorted(self.directory.glob("shard-*.npz"))
+        if not paths:
+            raise CacheError(f"No embedding shards in {self.directory}")
+        positions = {identifier: index for index, identifier in enumerate(expected_ids)}
+        result: np.ndarray | None = None
+        found: set[str] = set()
+        cached_ids: set[str] = set()
+        for index, path in enumerate(paths):
+            if path.name != f"shard-{index:06d}.npz":
+                raise CacheError(f"Non-contiguous embedding shards in {self.directory}")
+            try:
+                with np.load(path, allow_pickle=False) as data:
+                    ids = data["observation_ids"].astype(str).tolist()
+                    embeddings = data["embeddings"]
+                    valid = (
+                        embeddings.dtype == np.float32
+                        and embeddings.ndim == 2
+                        and embeddings.shape[0] == len(ids)
+                        and np.isfinite(embeddings).all()
+                        and np.allclose(
+                            np.linalg.norm(embeddings, axis=1), 1.0,
+                            atol=1e-4, rtol=1e-4,
+                        )
+                    )
+                    if not valid:
+                        raise CacheError(f"Invalid embedding shard {index} in {self.directory}")
+                    if result is None:
+                        result = np.empty((len(expected_ids), embeddings.shape[1]), dtype=np.float32)
+                    elif result.shape[1] != embeddings.shape[1]:
+                        raise CacheError(f"Inconsistent embedding dimensions in {self.directory}")
+                    for row_index, identifier in enumerate(ids):
+                        if identifier in cached_ids:
+                            raise CacheError(f"Duplicate cached observation ID: {identifier}")
+                        cached_ids.add(identifier)
+                        destination = positions.get(identifier)
+                        if destination is not None:
+                            result[destination] = embeddings[row_index]
+                            found.add(identifier)
+            except CacheError:
+                raise
+            except (OSError, KeyError, ValueError) as error:
+                raise CacheError(f"Cannot read embedding shard {index} in {self.directory}") from error
+        missing = [identifier for identifier in expected_ids if identifier not in found]
+        if missing:
+            raise CacheError(
+                f"Cache is missing {len(missing)} requested observations; first: {missing[0]}"
+            )
+        if require_exact_ids and len(cached_ids) != len(expected_ids):
+            raise CacheError("Full cache observation IDs do not exactly match the requested IDs")
+        assert result is not None
+        return result
+
 
 def open_cache(directory: Path, model_name: str) -> FeatureCache:
     metadata_path = directory / "cache_manifest.json"
