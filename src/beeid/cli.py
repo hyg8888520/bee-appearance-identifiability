@@ -71,11 +71,17 @@ from .sltr.experiment import fit_sltr_selector, run_sltr_all, run_sltr_audit, ru
 from .sltr.protocol import validate_sltr_protocol
 from .sltr.report import generate_sltr_report
 from .sltr.synthetic import sltr_synthetic_smoke
+from .h6 import H6_MODELS
+from .h6.core import validate_h6_inputs
+from .h6.experiment import run_h6_all, run_h6_oracle_audit, track_h6, train_h6
+from .h6.protocol import validate_h6_protocol
+from .h6.report import generate_h6_report
+from .h6.synthetic import h6_synthetic_smoke
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="beeid", description="BEE24 H1 appearance through H5 BeeTrackQuery experiments"
+        prog="beeid", description="BEE24 H1 diagnostics through H6 global trajectory experiments"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -301,6 +307,26 @@ def _parser() -> argparse.ArgumentParser:
         "sltr-synthetic-smoke", help="Run SLTR selector smoke with a test-only encoder"
     )
     sltr_synthetic.add_argument("--output", type=Path)
+    h6_validate_protocol = subparsers.add_parser(
+        "h6-validate-protocol", help="Validate the frozen H6 global trajectory protocol"
+    )
+    h6_validate_protocol.add_argument("--protocol", type=Path, required=True)
+    h6_validate_protocol.add_argument("--checksum", type=Path)
+    configured("h6-validate", "Validate read-only H3 inputs and H6 split isolation")
+    configured("h6-oracle-audit", "Audit dense candidate graph recall before fitting")
+    h6_train = configured("h6-train", "Train global association and trajectory selector networks")
+    h6_train.add_argument("--models", nargs="+", choices=H6_MODELS, required=True)
+    h6_track = configured("h6-track", "Evaluate calibrated global tracking on development")
+    h6_track.add_argument("--models", nargs="+", choices=H6_MODELS, required=True)
+    h6_report = configured("h6-report", "Generate H6 scientific gate and signed report")
+    h6_report.add_argument("--models", nargs="+", choices=H6_MODELS, required=True)
+    h6_all = configured("h6-run-all", "Run H6 oracle, GPU training, calibration, tracking, and report")
+    h6_all.add_argument("--models", nargs="+", choices=H6_MODELS, default=list(H6_MODELS))
+    h6_all.add_argument("--confirm-full", action="store_true")
+    h6_synthetic = subparsers.add_parser(
+        "h6-synthetic-smoke", help="Run CPU-only H6 scientific smoke with test-only features"
+    )
+    h6_synthetic.add_argument("--output", type=Path)
     return parser
 
 
@@ -506,6 +532,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = h51_synthetic_smoke(arguments.output)
         elif arguments.command == "sltr-synthetic-smoke":
             result = sltr_synthetic_smoke(arguments.output)
+        elif arguments.command == "h6-synthetic-smoke":
+            result = h6_synthetic_smoke(arguments.output)
         elif arguments.command == "h3-validate-protocol":
             result = validate_h3_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "h4-validate-protocol":
@@ -518,6 +546,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = validate_h51_protocol(arguments.protocol, arguments.checksum)
         elif arguments.command == "sltr-validate-protocol":
             result = validate_sltr_protocol(arguments.protocol, arguments.checksum)
+        elif arguments.command == "h6-validate-protocol":
+            result = validate_h6_protocol(arguments.protocol, arguments.checksum)
         else:
             config = load_config(arguments.config)
             if arguments.command == "validate-data":
@@ -671,6 +701,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = generate_sltr_report(config, arguments.models)
             elif arguments.command == "sltr-run-all":
                 result = run_sltr_all(config, arguments.models, arguments.confirm_full)
+            elif arguments.command == "h6-validate":
+                result = validate_h6_inputs(config).audit
+            elif arguments.command == "h6-oracle-audit":
+                result = run_h6_oracle_audit(config)
+            elif arguments.command == "h6-train":
+                result = train_h6(config, arguments.models)
+            elif arguments.command == "h6-track":
+                result = track_h6(config, arguments.models)
+            elif arguments.command == "h6-report":
+                result = generate_h6_report(config, arguments.models)
+            elif arguments.command == "h6-run-all":
+                result = run_h6_all(config, arguments.models, arguments.confirm_full)
             else:
                 raise AssertionError(arguments.command)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

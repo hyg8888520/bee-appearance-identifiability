@@ -1,0 +1,2 @@
+# Local/server paths belong only in configs/h6.local.yaml (gitignored).
+# Start from h6.example.yaml; this file exists to make the naming rule explicit.

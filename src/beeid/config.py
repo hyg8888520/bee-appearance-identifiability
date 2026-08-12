@@ -261,6 +261,46 @@ class H51Config:
 
 
 @dataclass(frozen=True)
+class H6Config:
+    """Global trajectory reasoning and calibrated selective fallback."""
+
+    protocol_lock_path: Path
+    protocol_checksum_path: Path
+    project_split_path: Path
+    allow_subset: bool
+    baseline_variant: str
+    window_length: int
+    window_stride: int
+    max_frame_gap: int
+    hidden_dim: int
+    num_heads: int
+    num_layers: int
+    feedforward_dim: int
+    dropout: float
+    epochs: int
+    learning_rate: float
+    weight_decay: float
+    gradient_clip_norm: float
+    max_tokens_per_batch: int
+    max_train_windows_per_video: int
+    negative_positive_ratio: float
+    association_loss_weight: float
+    contrastive_loss_weight: float
+    cycle_loss_weight: float
+    calibration_fraction: float
+    min_oracle_edge_recall: float
+    min_calibration_precision: float
+    max_calibration_harm: float
+    min_calibration_interventions: int
+    min_calibration_videos: int
+    min_assignment_probability: float
+    noninferiority_tolerance: float
+    min_nonharmed_videos: int
+    checkpoint_interval_batches: int
+    random_seed: int
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     config_path: Path
     paths: PathsConfig
@@ -276,6 +316,7 @@ class ExperimentConfig:
     h5: H5Config | None
     h51: H51Config | None = None
     sltr: SLTRConfig | None = None
+    h6: H6Config | None = None
 
     @property
     def manifest_path(self) -> Path:
@@ -465,7 +506,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     root = _mapping(raw, "config")
     _keys(
         root,
-        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5", "h51", "sltr"},
+        {"paths", "runtime", "dataset", "protocol", "models", "h2", "h25", "h3", "h4", "h41", "h5", "h51", "sltr", "h6"},
         "config",
     )
     base = config_path.parent
@@ -1344,6 +1385,91 @@ def load_config(path: str | Path) -> ExperimentConfig:
             random_seed=_positive_int(_require(value, "random_seed", "sltr"), "sltr.random_seed"),
         )
 
+    h6: H6Config | None = None
+    if "h6" in root and root["h6"] is not None:
+        value = _mapping(root["h6"], "h6")
+        h6_keys = {
+            "protocol_lock", "protocol_checksum", "project_split", "allow_subset",
+            "baseline_variant", "window_length", "window_stride", "max_frame_gap",
+            "hidden_dim", "num_heads", "num_layers", "feedforward_dim", "dropout",
+            "epochs", "learning_rate", "weight_decay", "gradient_clip_norm",
+            "max_tokens_per_batch", "max_train_windows_per_video",
+            "negative_positive_ratio", "association_loss_weight",
+            "contrastive_loss_weight", "cycle_loss_weight", "calibration_fraction",
+            "min_oracle_edge_recall", "min_calibration_precision",
+            "max_calibration_harm", "min_calibration_interventions",
+            "min_calibration_videos", "min_assignment_probability",
+            "noninferiority_tolerance", "min_nonharmed_videos",
+            "checkpoint_interval_batches", "random_seed",
+        }
+        _keys(value, h6_keys, "h6")
+        if h3 is None:
+            raise ConfigurationError("H6 requires the unchanged frozen h3 section")
+        if paths.h1_output_root is None or paths.h3_output_root is None:
+            raise ConfigurationError("H6 requires paths.h1_output_root and paths.h3_output_root")
+        for label, source_root in (("H1", paths.h1_output_root), ("H3", paths.h3_output_root)):
+            if _paths_overlap(paths.output_root, source_root):
+                raise ConfigurationError(
+                    f"H6 output_root must not contain or be contained by the {label} source root"
+                )
+        if dataset.source_splits != ("train",) or protocol.evaluation_split != "validation":
+            raise ConfigurationError(
+                "H6 is restricted to project_train fitting and development_validation evaluation"
+            )
+        baseline_variant = _require(value, "baseline_variant", "h6")
+        if baseline_variant != "baseline_association":
+            raise ConfigurationError("h6.baseline_variant is frozen at baseline_association")
+        window_length = _positive_int(_require(value, "window_length", "h6"), "h6.window_length")
+        window_stride = _positive_int(_require(value, "window_stride", "h6"), "h6.window_stride")
+        max_frame_gap = _positive_int(_require(value, "max_frame_gap", "h6"), "h6.max_frame_gap")
+        if window_stride > window_length:
+            raise ConfigurationError("h6.window_stride must not exceed h6.window_length")
+        if max_frame_gap >= window_length:
+            raise ConfigurationError("h6.max_frame_gap must be smaller than h6.window_length")
+        hidden_dim = _positive_int(_require(value, "hidden_dim", "h6"), "h6.hidden_dim")
+        num_heads = _positive_int(_require(value, "num_heads", "h6"), "h6.num_heads")
+        if hidden_dim % num_heads:
+            raise ConfigurationError("h6.hidden_dim must be divisible by h6.num_heads")
+        calibration_fraction = _bounded_float(
+            _require(value, "calibration_fraction", "h6"), "h6.calibration_fraction", 0.05, 0.5
+        )
+        h6 = H6Config(
+            protocol_lock_path=_path(_require(value, "protocol_lock", "h6"), base, "h6.protocol_lock"),  # type: ignore[arg-type]
+            protocol_checksum_path=_path(_require(value, "protocol_checksum", "h6"), base, "h6.protocol_checksum"),  # type: ignore[arg-type]
+            project_split_path=_path(_require(value, "project_split", "h6"), base, "h6.project_split"),  # type: ignore[arg-type]
+            allow_subset=_bool(_require(value, "allow_subset", "h6"), "h6.allow_subset"),
+            baseline_variant=str(baseline_variant),
+            window_length=window_length,
+            window_stride=window_stride,
+            max_frame_gap=max_frame_gap,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            num_layers=_positive_int(_require(value, "num_layers", "h6"), "h6.num_layers"),
+            feedforward_dim=_positive_int(_require(value, "feedforward_dim", "h6"), "h6.feedforward_dim"),
+            dropout=_bounded_float(_require(value, "dropout", "h6"), "h6.dropout", 0.0, 0.8),
+            epochs=_positive_int(_require(value, "epochs", "h6"), "h6.epochs"),
+            learning_rate=_bounded_float(_require(value, "learning_rate", "h6"), "h6.learning_rate", 1e-8, 1.0),
+            weight_decay=_bounded_float(_require(value, "weight_decay", "h6"), "h6.weight_decay", 0.0, 10.0),
+            gradient_clip_norm=_bounded_float(_require(value, "gradient_clip_norm", "h6"), "h6.gradient_clip_norm", 1e-6, 1e6),
+            max_tokens_per_batch=_positive_int(_require(value, "max_tokens_per_batch", "h6"), "h6.max_tokens_per_batch"),
+            max_train_windows_per_video=_positive_int(_require(value, "max_train_windows_per_video", "h6"), "h6.max_train_windows_per_video"),
+            negative_positive_ratio=_bounded_float(_require(value, "negative_positive_ratio", "h6"), "h6.negative_positive_ratio", 1.0, 1000.0),
+            association_loss_weight=_bounded_float(_require(value, "association_loss_weight", "h6"), "h6.association_loss_weight", 0.0, 100.0),
+            contrastive_loss_weight=_bounded_float(_require(value, "contrastive_loss_weight", "h6"), "h6.contrastive_loss_weight", 0.0, 100.0),
+            cycle_loss_weight=_bounded_float(_require(value, "cycle_loss_weight", "h6"), "h6.cycle_loss_weight", 0.0, 100.0),
+            calibration_fraction=calibration_fraction,
+            min_oracle_edge_recall=_bounded_float(_require(value, "min_oracle_edge_recall", "h6"), "h6.min_oracle_edge_recall", 0.0, 1.0),
+            min_calibration_precision=_bounded_float(_require(value, "min_calibration_precision", "h6"), "h6.min_calibration_precision", 0.5, 1.0),
+            max_calibration_harm=_bounded_float(_require(value, "max_calibration_harm", "h6"), "h6.max_calibration_harm", 0.0, 0.5),
+            min_calibration_interventions=_positive_int(_require(value, "min_calibration_interventions", "h6"), "h6.min_calibration_interventions"),
+            min_calibration_videos=_positive_int(_require(value, "min_calibration_videos", "h6"), "h6.min_calibration_videos"),
+            min_assignment_probability=_bounded_float(_require(value, "min_assignment_probability", "h6"), "h6.min_assignment_probability", 0.0, 1.0),
+            noninferiority_tolerance=_bounded_float(_require(value, "noninferiority_tolerance", "h6"), "h6.noninferiority_tolerance", 0.0, 0.1),
+            min_nonharmed_videos=_positive_int(_require(value, "min_nonharmed_videos", "h6"), "h6.min_nonharmed_videos"),
+            checkpoint_interval_batches=_positive_int(_require(value, "checkpoint_interval_batches", "h6"), "h6.checkpoint_interval_batches"),
+            random_seed=_positive_int(_require(value, "random_seed", "h6"), "h6.random_seed"),
+        )
+
     return ExperimentConfig(
-        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5, h51, sltr
+        config_path, paths, runtime, dataset, protocol, models, h2, h25, h3, h4, h41, h5, h51, sltr, h6
     )
