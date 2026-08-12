@@ -333,3 +333,9 @@ same RNG state; after bounded retries it recomputes that same batch in GPU FP32,
 closed if FP32 is non-finite. Recovery counts are recorded in training metadata. This implementation
 has a new checkpoint signature, so use a new external `output_root` when replacing an earlier failed
 H6 run rather than reusing its partial checkpoint.
+
+H6 v3 bounds 24 GiB GPU memory without changing the experiment: a logical token-budget batch is
+backpropagated one window at a time, all pair edges are evaluated in checkpointed 4096-edge chunks,
+and gradients retain the original mean-over-windows objective before one optimizer step. No top-K
+or observation dropping is introduced. The H6 Linux launchers enable expandable CUDA allocator
+segments by default. Use a new external output root when moving from H6 v1/v2 to v3.

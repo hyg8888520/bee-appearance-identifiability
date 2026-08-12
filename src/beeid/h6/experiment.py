@@ -9,13 +9,14 @@ import json
 import os
 from pathlib import Path
 import random
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 import uuid
 
 import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as functional
+from torch.utils.checkpoint import checkpoint
 
 from ..config import ExperimentConfig
 from ..h3.metrics import paired_video_differences, summarize_gt_assignments
@@ -29,8 +30,7 @@ from .data import (
 )
 from .model import (
     GlobalTrajectoryReasoner, H6ModelSpec, TRAJECTORY_FEATURE_NAMES, TrajectorySelector,
-    balanced_edge_loss, cycle_consistency_loss, model_parameter_report,
-    supervised_contrastive_pair_loss,
+    model_parameter_report,
 )
 from .oracle import audit_candidate_reachability
 from .tracker import (
@@ -54,6 +54,7 @@ ASSIGNMENT_FIELDS = (
 
 AMP_OVERFLOW_RETRY_LIMIT = 16
 AMP_MIN_LOSS_SCALE = 1.0
+PAIR_TRAIN_CHUNK_SIZE = 4_096
 
 
 def _now() -> str:
@@ -89,11 +90,12 @@ def _train_step_with_amp_recovery(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
-    compute_loss: Callable[[bool], torch.Tensor | None],
+    compute_losses: Callable[[bool], Iterable[torch.Tensor]],
     *,
     use_amp: bool,
     gradient_clip_norm: float,
     device: torch.device,
+    loss_denominator: int = 1,
     max_amp_retries: int = AMP_OVERFLOW_RETRY_LIMIT,
 ) -> dict[str, Any] | None:
     """Run one optimizer step without silently dropping an overflowing AMP batch.
@@ -103,6 +105,8 @@ def _train_step_with_amp_recovery(
     finite, the same batch is recomputed in FP32 on the same device.  A non-finite
     FP32 result remains a hard error.
     """
+    if loss_denominator <= 0:
+        raise ValueError("H6 loss_denominator must be positive")
     cpu_rng_state = torch.get_rng_state()
     cuda_rng_states = torch.cuda.get_rng_state_all() if device.type == "cuda" else []
     amp_overflow_count = 0
@@ -114,16 +118,29 @@ def _train_step_with_amp_recovery(
             torch.cuda.set_rng_state_all(cuda_rng_states)
         optimizer.zero_grad(set_to_none=True)
         amp_attempt = use_amp and not force_fp32
-        loss = compute_loss(amp_attempt)
-        if loss is None:
-            return None
-        loss_value = float(loss.detach())
         loss_scale = float(scaler.get_scale()) if amp_attempt else None
+        loss_value = 0.0
+        loss_count = 0
+        for loss in compute_losses(amp_attempt):
+            loss_value += float(loss.detach()) / loss_denominator
+            normalized_loss = loss / loss_denominator
+            if amp_attempt:
+                scaler.scale(normalized_loss).backward()
+            else:
+                normalized_loss.backward()
+            loss_count += 1
+            # Release each window graph before the next forward pass.  Without
+            # this explicit deletion, Python retains the previous yielded loss
+            # while requesting the next one and doubles the transient peak.
+            del normalized_loss, loss
+        if loss_count == 0:
+            return None
+        if loss_count != loss_denominator:
+            raise RuntimeError(
+                f"H6 microbatch loss count changed: expected {loss_denominator}, got {loss_count}"
+            )
         if amp_attempt:
-            scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-        else:
-            loss.backward()
         gradient_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm))
         finite = np.isfinite(loss_value) and np.isfinite(gradient_norm)
         if finite:
@@ -154,6 +171,85 @@ def _train_step_with_amp_recovery(
         amp_overflow_count += 1
         if amp_overflow_count >= max_amp_retries or next_scale >= current_scale:
             force_fp32 = True
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+
+def _memory_bounded_window_loss(
+    model: GlobalTrajectoryReasoner,
+    encoded: torch.Tensor,
+    geometry: torch.Tensor,
+    frames: torch.Tensor,
+    left: torch.Tensor,
+    right: torch.Tensor,
+    labels: torch.Tensor,
+    triples: torch.Tensor,
+    *,
+    association_weight: float,
+    contrastive_weight: float,
+    cycle_weight: float,
+    chunk_size: int = PAIR_TRAIN_CHUNK_SIZE,
+) -> torch.Tensor:
+    """Exact H6 window objective with bounded pair-head activation memory."""
+    edge_count = int(labels.numel())
+    if edge_count == 0:
+        raise ValueError("H6 window loss requires candidate edges")
+    positives = labels.sum()
+    negatives = labels.numel() - positives
+    positive_weight = (negatives / positives.clamp_min(1.0)).clamp(1.0, 1000.0)
+    association_sum = encoded.sum() * 0.0
+    contrastive_sum = encoded.sum() * 0.0
+
+    def pair_values(
+        values: torch.Tensor, boxes: torch.Tensor, positions: torch.Tensor,
+        a: torch.Tensor, b: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            model.pair_logits(values, boxes, positions, a, b),
+            functional.cosine_similarity(values[a], values[b], dim=-1),
+        )
+
+    for start in range(0, edge_count, chunk_size):
+        a = left[start : start + chunk_size]
+        b = right[start : start + chunk_size]
+        truth = labels[start : start + chunk_size]
+        logits, cosine = checkpoint(
+            pair_values, encoded, geometry, frames, a, b, use_reentrant=False,
+        )
+        association_sum = association_sum + functional.binary_cross_entropy_with_logits(
+            logits.float(), truth, pos_weight=positive_weight, reduction="sum"
+        )
+        contrastive_sum = contrastive_sum + (
+            truth * (1.0 - cosine)
+            + (1.0 - truth) * functional.relu(cosine - 0.2)
+        ).sum()
+
+    cycle_sum = encoded.sum() * 0.0
+    triple_count = int(triples.shape[0])
+    for start in range(0, triple_count, chunk_size):
+        selected = triples[start : start + chunk_size]
+
+        def cycle_values(
+            values: torch.Tensor, boxes: torch.Tensor, positions: torch.Tensor,
+            triplet: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            first = model.pair_logits(values, boxes, positions, triplet[:, 0], triplet[:, 1])
+            second = model.pair_logits(values, boxes, positions, triplet[:, 1], triplet[:, 2])
+            direct = model.pair_logits(values, boxes, positions, triplet[:, 0], triplet[:, 2])
+            return first.sigmoid(), second.sigmoid(), direct.sigmoid()
+
+        first, second, direct = checkpoint(
+            cycle_values, encoded, geometry, frames, selected, use_reentrant=False,
+        )
+        cycle_sum = cycle_sum + functional.mse_loss(
+            direct, first * second, reduction="sum"
+        )
+
+    return (
+        association_weight * association_sum / edge_count
+        + contrastive_weight * contrastive_sum / edge_count
+        + cycle_weight * cycle_sum / max(1, triple_count)
+    )
 
 
 def _groups(inputs: H6Inputs, partition: str) -> dict[str, list[int]]:
@@ -166,6 +262,13 @@ def _groups(inputs: H6Inputs, partition: str) -> dict[str, list[int]]:
             inputs.observations[index].center_y, inputs.observations[index].observation_id,
         ))
     return dict(sorted(result.items()))
+
+
+def _window_has_candidate_edges(
+    window: Any, observations: Sequence[Any], max_frame_gap: int,
+) -> bool:
+    frames = sorted({int(observations[index].frame) for index in window.indices})
+    return any(0 < right - left <= max_frame_gap for left, right in zip(frames, frames[1:]))
 
 
 def run_h6_oracle_audit(config: ExperimentConfig) -> dict[str, Any]:
@@ -358,52 +461,54 @@ def _train_association_model(
         for batch_index, window_group in enumerate(token_budget_batches(shuffled, h6.max_tokens_per_batch)):
             if epoch == start_epoch and batch_index < start_batch:
                 continue
-            batch = collate_windows(window_group, inputs.observations, embeddings, h6.window_length).to(device)
-            def compute_batch_loss(amp_enabled: bool) -> torch.Tensor | None:
+            valid_windows = [
+                window for window in window_group
+                if _window_has_candidate_edges(window, inputs.observations, h6.max_frame_gap)
+            ]
+            if not valid_windows:
+                continue
+
+            def compute_batch_losses(amp_enabled: bool) -> Iterable[torch.Tensor]:
                 # Recreate the local sampler on every retry so negative edges
                 # remain identical while only numerical precision changes.
                 generator = torch.Generator(device=device).manual_seed(
                     h6.random_seed * 1_000_003 + epoch * 10_007 + batch_index
                 )
-                with torch.autocast(
-                    device_type=device.type, dtype=_amp_dtype(config), enabled=amp_enabled
-                ):
-                    encoded = model.encode(
-                        batch.embeddings, batch.geometry, batch.frame_index, batch.token_mask
-                    )
-                    sample_losses: list[torch.Tensor] = []
-                    for sample_index, identities in enumerate(batch.identities):
+                for window in valid_windows:
+                    microbatch = collate_windows(
+                        [window], inputs.observations, embeddings, h6.window_length
+                    ).to(device)
+                    with torch.autocast(
+                        device_type=device.type, dtype=_amp_dtype(config), enabled=amp_enabled
+                    ):
+                        encoded = model.encode(
+                            microbatch.embeddings, microbatch.geometry,
+                            microbatch.frame_index, microbatch.token_mask,
+                        )[0]
+                        identities = microbatch.identities[0]
                         count = len(identities)
-                        frames = batch.frame_index[sample_index, :count]
+                        frames = microbatch.frame_index[0, :count]
                         left, right, labels = dense_candidate_edges(
                             frames, identities, h6.max_frame_gap,
                             h6.negative_positive_ratio, generator,
                         )
                         if left.numel() == 0:
-                            continue
-                        logits = model.pair_logits(
-                            encoded[sample_index, :count], batch.geometry[sample_index, :count],
-                            frames, left, right,
-                        )
-                        association = balanced_edge_loss(logits.float(), labels)
-                        contrastive = supervised_contrastive_pair_loss(
-                            encoded[sample_index, :count], left, right, labels
-                        )
+                            raise RuntimeError("H6 prevalidated window unexpectedly has no candidate edges")
                         triples = identity_triples(frames, identities, h6.max_frame_gap)
-                        cycle = cycle_consistency_loss(
-                            model, encoded[sample_index, :count],
-                            batch.geometry[sample_index, :count], frames, triples,
+                        window_loss = _memory_bounded_window_loss(
+                            model, encoded[:count], microbatch.geometry[0, :count],
+                            frames, left, right, labels, triples,
+                            association_weight=h6.association_loss_weight,
+                            contrastive_weight=h6.contrastive_loss_weight,
+                            cycle_weight=h6.cycle_loss_weight,
                         )
-                        sample_losses.append(
-                            h6.association_loss_weight * association
-                            + h6.contrastive_loss_weight * contrastive
-                            + h6.cycle_loss_weight * cycle
-                        )
-                    return torch.stack(sample_losses).mean() if sample_losses else None
+                    # Exit autocast before the caller runs backward().
+                    yield window_loss
 
             step = _train_step_with_amp_recovery(
-                model, optimizer, scaler, compute_batch_loss,
+                model, optimizer, scaler, compute_batch_losses,
                 use_amp=use_amp, gradient_clip_norm=h6.gradient_clip_norm, device=device,
+                loss_denominator=len(valid_windows),
             )
             if step is None:
                 continue
@@ -414,7 +519,7 @@ def _train_association_model(
             history.append({
                 "epoch": epoch + 1, "batch": batch_index + 1, "loss": loss_value,
                 "gradient_norm": gradient_norm, "window_count": len(window_group),
-                "token_count": int(batch.token_mask.sum().item()),
+                "token_count": sum(len(window.indices) for window in window_group),
                 "amp_overflow_retries": int(step["amp_overflow_retries"]),
                 "fp32_fallback": bool(step["fp32_fallback"]),
                 "loss_scale": step["loss_scale"],

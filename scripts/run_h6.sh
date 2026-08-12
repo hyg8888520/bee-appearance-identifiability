@@ -21,6 +21,7 @@ export MKL_NUM_THREADS="$CPU_THREADS"
 export OPENBLAS_NUM_THREADS="$CPU_THREADS"
 export NUMEXPR_NUM_THREADS="$CPU_THREADS"
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 "$PYTHON_BIN" -m beeid.cli h6-validate-protocol \
   --protocol configs/h6_protocol.lock.yaml \

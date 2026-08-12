@@ -59,8 +59,10 @@ def global_edge_probabilities(
                 count = int(batch.token_mask[sample_index].sum().item())
                 encoded = encoded_batch[sample_index, :count]
                 left, right = candidate_pairs(batch.frame_index[sample_index, :count], max_frame_gap)
-                for start in range(0, len(left), 65_536):
-                    a, b = left[start : start + 65_536], right[start : start + 65_536]
+                # A 65k chunk materializes roughly 400 MiB of pair features for
+                # hidden_dim=384.  Keep inference bounded on a 24 GiB RTX 4090.
+                for start in range(0, len(left), 4_096):
+                    a, b = left[start : start + 4_096], right[start : start + 4_096]
                     probabilities = model.pair_logits(
                         encoded, batch.geometry[sample_index, :count],
                         batch.frame_index[sample_index, :count], a, b

@@ -10,12 +10,16 @@ import torch
 from beeid.data.mot import Observation
 from beeid.h6.data import build_windows, collate_windows, dense_candidate_edges
 from beeid.h6.model import GlobalTrajectoryReasoner, H6ModelSpec
+from beeid.h6.model import (
+    balanced_edge_loss, cycle_consistency_loss, supervised_contrastive_pair_loss,
+)
 from beeid.h6.oracle import audit_candidate_reachability
 from beeid.h6.protocol import H6ProtocolError, validate_h6_protocol
 from beeid.h6.synthetic import h6_synthetic_smoke
 from beeid.h6.experiment import _calibrate_threshold
 from beeid.h6.experiment import (
-    _atomic_torch_save, _load_training_checkpoint, _train_step_with_amp_recovery,
+    _atomic_torch_save, _load_training_checkpoint, _memory_bounded_window_loss,
+    _train_step_with_amp_recovery,
 )
 from beeid.h6.tracker import (
     assignment_rows, attach_offline_trajectory_utility, cluster_global_edges,
@@ -228,20 +232,23 @@ def test_amp_overflow_retries_same_batch_then_succeeds() -> None:
     scaler = _SimulatedGradScaler(4.0)
     random_draws: list[float] = []
 
-    def loss(amp_enabled: bool) -> torch.Tensor:
-        random_draws.append(float(torch.rand(())))
-        if amp_enabled and scaler.get_scale() > 2.0:
-            return parameter * torch.tensor(float("inf"))
-        return parameter.square()
+    def loss(amp_enabled: bool):  # type: ignore[no-untyped-def]
+        for _ in range(2):
+            random_draws.append(float(torch.rand(())))
+            if amp_enabled and scaler.get_scale() > 2.0:
+                yield parameter.sum() * torch.tensor(float("inf"))
+            else:
+                yield parameter.square().sum()
 
     result = _train_step_with_amp_recovery(
         model, optimizer, scaler, loss, use_amp=True,
-        gradient_clip_norm=1.0, device=torch.device("cpu"), max_amp_retries=4,
+        gradient_clip_norm=1.0, device=torch.device("cpu"), loss_denominator=2,
+        max_amp_retries=4,
     )
     assert result is not None
     assert result["amp_overflow_retries"] == 1
     assert result["fp32_fallback"] is False
-    assert random_draws[0] == random_draws[1]
+    assert random_draws[:2] == random_draws[2:]
     assert parameter.item() < 1.0
 
 
@@ -253,9 +260,12 @@ def test_amp_exhaustion_recomputes_same_batch_in_fp32_and_remains_strict() -> No
     scaler = _SimulatedGradScaler(4.0)
     modes: list[bool] = []
 
-    def recoverable_loss(amp_enabled: bool) -> torch.Tensor:
+    def recoverable_loss(amp_enabled: bool):  # type: ignore[no-untyped-def]
         modes.append(amp_enabled)
-        return parameter * torch.tensor(float("inf")) if amp_enabled else parameter.square()
+        if amp_enabled:
+            yield parameter.sum() * torch.tensor(float("inf"))
+        else:
+            yield parameter.square().sum()
 
     result = _train_step_with_amp_recovery(
         model, optimizer, scaler, recoverable_loss, use_amp=True,
@@ -266,12 +276,59 @@ def test_amp_exhaustion_recomputes_same_batch_in_fp32_and_remains_strict() -> No
     assert result["fp32_fallback"] is True
     assert modes == [True, True, False]
 
-    def irrecoverable_loss(amp_enabled: bool) -> torch.Tensor:
+    def irrecoverable_loss(amp_enabled: bool):  # type: ignore[no-untyped-def]
         del amp_enabled
-        return parameter * torch.tensor(float("inf"))
+        yield parameter.sum() * torch.tensor(float("inf"))
 
     with pytest.raises(RuntimeError, match="GPU FP32 fallback"):
         _train_step_with_amp_recovery(
             model, optimizer, scaler, irrecoverable_loss, use_amp=True,
             gradient_clip_norm=1.0, device=torch.device("cpu"), max_amp_retries=1,
         )
+
+
+def test_memory_bounded_window_loss_matches_original_loss_and_gradients() -> None:
+    torch.manual_seed(24)
+    original = GlobalTrajectoryReasoner(H6ModelSpec(8, 16, 4, 1, 32, 0.0, 6))
+    bounded = GlobalTrajectoryReasoner(original.spec)
+    bounded.load_state_dict(original.state_dict(), strict=True)
+    observations = [_obs(frame, track) for frame in range(1, 5) for track in (1, 2)]
+    embeddings = np.random.default_rng(24).normal(size=(8, 8)).astype(np.float32)
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    window = build_windows(observations, range(8), 6, 3)[0]
+    batch = collate_windows([window], observations, embeddings, 6)
+    frames = batch.frame_index[0]
+    left, right, labels = dense_candidate_edges(frames, batch.identities[0], 3)
+    triples = torch.tensor([[0, 2, 4], [1, 3, 5]], dtype=torch.long)
+
+    encoded = original.encode(
+        batch.embeddings, batch.geometry, batch.frame_index, batch.token_mask
+    )[0]
+    original_loss = (
+        balanced_edge_loss(
+            original.pair_logits(encoded, batch.geometry[0], frames, left, right), labels
+        )
+        + 0.25 * supervised_contrastive_pair_loss(encoded, left, right, labels)
+        + 0.1 * cycle_consistency_loss(
+            original, encoded, batch.geometry[0], frames, triples
+        )
+    )
+    original_loss.backward()
+
+    bounded_encoded = bounded.encode(
+        batch.embeddings, batch.geometry, batch.frame_index, batch.token_mask
+    )[0]
+    bounded_loss = _memory_bounded_window_loss(
+        bounded, bounded_encoded, batch.geometry[0], frames, left, right, labels, triples,
+        association_weight=1.0, contrastive_weight=0.25, cycle_weight=0.1,
+        chunk_size=3,
+    )
+    bounded_loss.backward()
+
+    torch.testing.assert_close(bounded_loss, original_loss, rtol=1e-5, atol=1e-6)
+    for (name_a, parameter_a), (name_b, parameter_b) in zip(
+        original.named_parameters(), bounded.named_parameters()
+    ):
+        assert name_a == name_b
+        assert parameter_a.grad is not None and parameter_b.grad is not None
+        torch.testing.assert_close(parameter_b.grad, parameter_a.grad, rtol=2e-4, atol=2e-6)

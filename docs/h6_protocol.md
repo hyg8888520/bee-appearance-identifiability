@@ -31,6 +31,12 @@ H6 的 CUDA 训练不再把可恢复的 FP16 loss-scale 溢出直接当作实验
 
 该修改升级了训练实现签名，旧实现生成的 partial/final checkpoint 会被拒绝复用。服务器验证时应使用新的 `paths.output_root`，保留旧目录作为审计备份。
 
+### 显存上界
+
+`max_tokens_per_batch` 定义逻辑 optimizer batch，不再要求其中全部窗口的 pair-loss 计算图同时驻留显存。实现按窗口做梯度累积，并以逻辑 batch 中有效窗口数保持原有 mean loss；窗口内所有候选边仍全部参与训练，但 pair head 按 4096 条边分块并用 activation checkpointing（激活重计算）反向传播。推理同样按 4096 条边分块。该实现没有 top-K 剪枝、没有跳过候选边，也没有改变一次 optimizer step 所使用的窗口和损失权重。Linux 脚本默认启用 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 以减少 allocator 碎片。
+
+显存修复再次升级了训练实现签名；v1/v2 输出目录均不得作为 v3 的 checkpoint 来源。真实 RTX 4090 峰值仍为 `SERVER_VALIDATION_PENDING`。
+
 ## 思路来源
 
 - [MOTIP（CVPR 2025）](https://openaccess.thecvf.com/content/CVPR2025/html/Gao_Multiple_Object_Tracking_as_ID_Prediction_CVPR_2025_paper.html)：把多目标跟踪表述为身份预测，启发“直接学习身份关联”而不是给固定匹配器调权重。

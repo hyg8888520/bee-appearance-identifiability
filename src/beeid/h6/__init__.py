@@ -7,4 +7,4 @@ H6_VARIANTS = (
     "calibrated_selective_global",
 )
 H6_PRIMARY_VARIANT = "calibrated_selective_global"
-H6_IMPLEMENTATION = "beeid.h6:v2-amp-retry-global-frame-context-pair-reasoner"
+H6_IMPLEMENTATION = "beeid.h6:v3-memory-bounded-global-frame-context-pair-reasoner"

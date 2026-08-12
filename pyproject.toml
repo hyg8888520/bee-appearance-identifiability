@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bee-appearance-identifiability"
-version = "1.0.1"
+version = "1.0.2"
 description = "Reproducible BEE24 appearance diagnostics and global trajectory reasoning experiments"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

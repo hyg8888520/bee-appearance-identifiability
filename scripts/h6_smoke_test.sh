@@ -17,6 +17,7 @@ export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export OPENBLAS_NUM_THREADS="$OMP_NUM_THREADS"
 export NUMEXPR_NUM_THREADS="$OMP_NUM_THREADS"
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 "$PYTHON_BIN" -m beeid.cli h6-synthetic-smoke
 "$PYTHON_BIN" -m beeid.cli h6-run-all \
