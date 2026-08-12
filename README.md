@@ -296,3 +296,46 @@ and [the server deployment guide](docs/sltr_server_deployment.md),
 and use `scripts/run_sltr.sh`, `resume_sltr.sh`, `monitor_sltr.sh`, `sltr_smoke_test.sh`, and
 `package_sltr_results.sh`. SLTR takes inspiration from the topic of local repair only; it is not an
 official reproduction of TOPICTrack or any upstream model.
+
+## H6 global trajectory reasoner
+
+H6 replaces hand-designed rank-1 repair with two trainable networks: a long-window global
+association reasoner and a trajectory-component selector. The reasoner scores every cross-frame
+pair within the frozen temporal gap (no inference top-K); the selector accepts a complete
+baseline/neural overlap component or reproduces the frozen H3 baseline exactly. Association and
+selector fitting use only `project_train_fit`; the risk threshold uses an isolated
+`project_train_calibration` video holdout; `development_validation` is evaluated afterward and
+final test remains unread.
+
+```bash
+git checkout codex/h6-global-trajectory-reasoner
+~/venvs/beeid-dino/bin/python -m pip install --no-deps -e .
+cp configs/h6_smoke.example.yaml configs/h6_smoke.local.yaml
+cp configs/h6.example.yaml configs/h6.local.yaml
+# Edit only external paths in both ignored local YAML files.
+
+~/venvs/beeid-dino/bin/python -m beeid.cli h6-validate-protocol \
+  --protocol configs/h6_protocol.lock.yaml \
+  --checksum configs/h6_protocol.lock.sha256
+bash scripts/h6_smoke_test.sh configs/h6_smoke.local.yaml ~/venvs/beeid-dino/bin/python
+bash scripts/run_h6.sh configs/h6.local.yaml ~/venvs/beeid-dino/bin/python
+```
+
+Monitor with `watch -n 5 'bash scripts/monitor_h6.sh /path/to/h6-output'`; resume by rerunning
+`scripts/resume_h6.sh`. H6 writes oracle recall, exact-resume checkpoints, calibration curves,
+trajectory decisions, GT-box metrics, a signed method decision, and `h6_report.md` under the
+external output root. Checkpoints/data/cache/local YAML remain ignored. See
+[the frozen H6 protocol](docs/h6_protocol.md). All real RTX 4090, full BEE24, and fixed-detector
+results remain `SERVER_VALIDATION_PENDING` until actually run.
+
+H6 CUDA training retries a numerically overflowing AMP batch with a reduced loss scale and the
+same RNG state; after bounded retries it recomputes that same batch in GPU FP32, and still fails
+closed if FP32 is non-finite. Recovery counts are recorded in training metadata. This implementation
+has a new checkpoint signature, so use a new external `output_root` when replacing an earlier failed
+H6 run rather than reusing its partial checkpoint.
+
+H6 v3 bounds 24 GiB GPU memory without changing the experiment: a logical token-budget batch is
+backpropagated one window at a time, all pair edges are evaluated in checkpointed 4096-edge chunks,
+and gradients retain the original mean-over-windows objective before one optimizer step. No top-K
+or observation dropping is introduced. The H6 Linux launchers enable expandable CUDA allocator
+segments by default. Use a new external output root when moving from H6 v1/v2 to v3.

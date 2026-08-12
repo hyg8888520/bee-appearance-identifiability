@@ -1,0 +1,75 @@
+schema_version: 1
+protocol_id: bee24-h6-global-trajectory-reasoner-development-v1
+status: FROZEN_DEVELOPMENT
+design_timing: DEFINED_AFTER_SLTR_V1_FAIL_CLOSED
+identity_definition: [video_id, track_id]
+isolation_unit: video_id
+
+project_split:
+  path: configs/splits/project_split.yaml
+  fit_partition: project_train_fit
+  calibration_partition: project_train_calibration
+  evaluation_partition: development_validation
+  calibration_algorithm: sha256_seed_video_group_holdout
+  final_test_access: false
+
+sources:
+  h1_manifest: read_only
+  h3_cache: read_only_no_feature_reextraction
+  h3_baseline: frozen_recomputed_from_h3_protocol
+  h3_protocol_path: configs/h3_protocol.lock.yaml
+  h3_protocol_checksum_path: configs/h3_protocol.lock.sha256
+
+model:
+  primary_backbones: [resnet50, dinov3]
+  architecture: global_frame_transformer_pair_reasoner
+  candidate_policy: all_cross_frame_pairs_within_gap_no_top_k
+  gt_identity_at_inference: false
+  future_context: offline_bidirectional_within_window
+
+training:
+  baseline_variant: baseline_association
+  window_length: 64
+  window_stride: 32
+  max_frame_gap: 12
+  hidden_dim: 384
+  num_heads: 8
+  num_layers: 6
+  feedforward_dim: 1536
+  dropout: 0.1
+  epochs: 30
+  learning_rate: 0.0002
+  weight_decay: 0.05
+  gradient_clip_norm: 1.0
+  max_tokens_per_batch: 8192
+  max_train_windows_per_video: 96
+  negative_positive_ratio: 16.0
+  association_loss_weight: 1.0
+  contrastive_loss_weight: 0.25
+  cycle_loss_weight: 0.1
+  calibration_fraction: 0.2
+  min_oracle_edge_recall: 0.98
+  min_calibration_precision: 0.9
+  max_calibration_harm: 0.05
+  min_calibration_interventions: 30
+  min_calibration_videos: 3
+  min_assignment_probability: 0.1
+  noninferiority_tolerance: 0.002
+  min_nonharmed_videos: 4
+  checkpoint_interval_batches: 25
+  random_seed: 24
+
+selection:
+  threshold_source: project_train_calibration_only
+  decision_input: observable_neural_and_baseline_partition_features_no_gt
+  association_threshold: calibrated_pair_precision_recall
+  fallback: exact_frozen_baseline_when_gate_fails
+  gate_unit: predicted_trajectory
+
+variants:
+  all: [baseline_association, global_trajectory_reasoner, calibrated_selective_global]
+  primary: calibrated_selective_global
+
+final_test:
+  access: false
+  runs_allowed_in_h6_development: 0

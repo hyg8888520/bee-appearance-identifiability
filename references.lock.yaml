@@ -68,3 +68,33 @@ research_prior_art:
     venue: ECCV 2026
     runtime_dependency: false
     purpose: Prior art boundary for persistent tracking queries, current-frame query refresh, and finite temporal memory
+  motip:
+    url: https://openaccess.thecvf.com/content/CVPR2025/html/Gao_Multiple_Object_Tracking_as_ID_Prediction_CVPR_2025_paper.html
+    venue: CVPR 2025
+    runtime_dependency: false
+    purpose: Prior art for formulating association as learned identity prediction
+  global_tracking_transformers:
+    url: https://openaccess.thecvf.com/content/CVPR2022/html/Zhou_Global_Tracking_Transformers_CVPR_2022_paper.html
+    venue: CVPR 2022
+    runtime_dependency: false
+    purpose: Prior art for global temporal interaction in tracking
+  3dmotformer:
+    url: https://openaccess.thecvf.com/content/ICCV2023/html/Ding_3DMOTFormer_Graph_Transformer_for_Online_3D_Multi-Object_Tracking_ICCV_2023_paper.html
+    venue: ICCV 2023
+    runtime_dependency: false
+    purpose: Prior art for graph-transformer spatiotemporal association
+  path_consistency:
+    url: https://openaccess.thecvf.com/content/CVPR2024/html/Lu_Self-Supervised_Multi-Object_Tracking_with_Path_Consistency_CVPR_2024_paper.html
+    venue: CVPR 2024
+    runtime_dependency: false
+    purpose: Prior art for path-consistency learning objectives
+  deconfusetrack:
+    url: https://openaccess.thecvf.com/content/CVPR2024/html/Huang_DeconfuseTrack_Dealing_with_Confusion_for_Multi-Object_Tracking_CVPR_2024_paper.html
+    venue: CVPR 2024
+    runtime_dependency: false
+    purpose: Prior art for explicit identity-confusion handling
+  multiple_hypothesis_tracking_revisited:
+    url: https://openaccess.thecvf.com/content_iccv_2015/html/Kim_Multiple_Hypothesis_Tracking_ICCV_2015_paper.html
+    venue: ICCV 2015
+    runtime_dependency: false
+    purpose: Prior art for trajectory-level alternative hypotheses
