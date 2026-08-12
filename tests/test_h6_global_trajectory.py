@@ -14,7 +14,9 @@ from beeid.h6.oracle import audit_candidate_reachability
 from beeid.h6.protocol import H6ProtocolError, validate_h6_protocol
 from beeid.h6.synthetic import h6_synthetic_smoke
 from beeid.h6.experiment import _calibrate_threshold
-from beeid.h6.experiment import _atomic_torch_save, _load_training_checkpoint
+from beeid.h6.experiment import (
+    _atomic_torch_save, _load_training_checkpoint, _train_step_with_amp_recovery,
+)
 from beeid.h6.tracker import (
     assignment_rows, attach_offline_trajectory_utility, cluster_global_edges,
     trajectory_feature_rows,
@@ -193,3 +195,83 @@ def test_checkpoint_signature_is_strict_and_loads_exact_state(tmp_path: Path) ->
     assert loaded is not None
     with pytest.raises(RuntimeError, match="incompatible H6 checkpoint"):
         _load_training_checkpoint(path, {**signature, "cache": "changed"}, model)
+
+
+class _SimulatedGradScaler:
+    """Small CPU test double for CUDA GradScaler's interface."""
+
+    def __init__(self, scale: float = 4.0) -> None:
+        self.scale_value = scale
+
+    def get_scale(self) -> float:
+        return self.scale_value
+
+    def scale(self, loss: torch.Tensor) -> torch.Tensor:
+        return loss
+
+    def unscale_(self, optimizer: torch.optim.Optimizer) -> None:
+        del optimizer
+
+    def step(self, optimizer: torch.optim.Optimizer) -> None:
+        optimizer.step()
+
+    def update(self, new_scale: float | None = None) -> None:
+        if new_scale is not None:
+            self.scale_value = float(new_scale)
+
+
+def test_amp_overflow_retries_same_batch_then_succeeds() -> None:
+    model = torch.nn.Linear(1, 1, bias=False)
+    parameter = model.weight
+    parameter.data.fill_(1.0)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scaler = _SimulatedGradScaler(4.0)
+    random_draws: list[float] = []
+
+    def loss(amp_enabled: bool) -> torch.Tensor:
+        random_draws.append(float(torch.rand(())))
+        if amp_enabled and scaler.get_scale() > 2.0:
+            return parameter * torch.tensor(float("inf"))
+        return parameter.square()
+
+    result = _train_step_with_amp_recovery(
+        model, optimizer, scaler, loss, use_amp=True,
+        gradient_clip_norm=1.0, device=torch.device("cpu"), max_amp_retries=4,
+    )
+    assert result is not None
+    assert result["amp_overflow_retries"] == 1
+    assert result["fp32_fallback"] is False
+    assert random_draws[0] == random_draws[1]
+    assert parameter.item() < 1.0
+
+
+def test_amp_exhaustion_recomputes_same_batch_in_fp32_and_remains_strict() -> None:
+    model = torch.nn.Linear(1, 1, bias=False)
+    parameter = model.weight
+    parameter.data.fill_(1.0)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scaler = _SimulatedGradScaler(4.0)
+    modes: list[bool] = []
+
+    def recoverable_loss(amp_enabled: bool) -> torch.Tensor:
+        modes.append(amp_enabled)
+        return parameter * torch.tensor(float("inf")) if amp_enabled else parameter.square()
+
+    result = _train_step_with_amp_recovery(
+        model, optimizer, scaler, recoverable_loss, use_amp=True,
+        gradient_clip_norm=1.0, device=torch.device("cpu"), max_amp_retries=2,
+    )
+    assert result is not None
+    assert result["amp_overflow_retries"] == 2
+    assert result["fp32_fallback"] is True
+    assert modes == [True, True, False]
+
+    def irrecoverable_loss(amp_enabled: bool) -> torch.Tensor:
+        del amp_enabled
+        return parameter * torch.tensor(float("inf"))
+
+    with pytest.raises(RuntimeError, match="GPU FP32 fallback"):
+        _train_step_with_amp_recovery(
+            model, optimizer, scaler, irrecoverable_loss, use_amp=True,
+            gradient_clip_norm=1.0, device=torch.device("cpu"), max_amp_retries=1,
+        )

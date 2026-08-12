@@ -327,3 +327,9 @@ trajectory decisions, GT-box metrics, a signed method decision, and `h6_report.m
 external output root. Checkpoints/data/cache/local YAML remain ignored. See
 [the frozen H6 protocol](docs/h6_protocol.md). All real RTX 4090, full BEE24, and fixed-detector
 results remain `SERVER_VALIDATION_PENDING` until actually run.
+
+H6 CUDA training retries a numerically overflowing AMP batch with a reduced loss scale and the
+same RNG state; after bounded retries it recomputes that same batch in GPU FP32, and still fails
+closed if FP32 is non-finite. Recovery counts are recorded in training metadata. This implementation
+has a new checkpoint signature, so use a new external `output_root` when replacing an earlier failed
+H6 run rather than reusing its partial checkpoint.

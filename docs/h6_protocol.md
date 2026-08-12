@@ -25,6 +25,12 @@ H6 不再尝试给 H3/TOPIC 增加一个小型记忆模块，也不以“DINOv3 
 
 checkpoint 原子写入并锁定协议、H3 cache、观测集合、网络规格和分区，同时保存 next batch、optimizer、GradScaler 及 CPU/CUDA RNG 状态。签名不一致拒绝复用。
 
+### AMP 数值恢复
+
+H6 的 CUDA 训练不再把可恢复的 FP16 loss-scale 溢出直接当作实验失败。若某批次出现非有限 loss 或梯度，训练器会降低动态 loss scale，恢复该批次开始前的 CPU/CUDA RNG 状态，并用相同 dropout、相同负样本重新计算同一批次；不会跳过样本。连续 16 次缩放仍不能恢复时，仅将同一批次在同一 GPU 上用 FP32 重算。FP32 仍非有限则严格停止。每批的 `amp_overflow_retries`、`fp32_fallback` 和 `loss_scale` 均写入 checkpoint history 与 progress；这属于数值执行容错，不改变协议、数据划分、损失、阈值或模型结构。
+
+该修改升级了训练实现签名，旧实现生成的 partial/final checkpoint 会被拒绝复用。服务器验证时应使用新的 `paths.output_root`，保留旧目录作为审计备份。
+
 ## 思路来源
 
 - [MOTIP（CVPR 2025）](https://openaccess.thecvf.com/content/CVPR2025/html/Gao_Multiple_Object_Tracking_as_ID_Prediction_CVPR_2025_paper.html)：把多目标跟踪表述为身份预测，启发“直接学习身份关联”而不是给固定匹配器调权重。
